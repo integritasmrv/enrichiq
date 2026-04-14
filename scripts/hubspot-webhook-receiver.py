@@ -9,12 +9,12 @@ WTOKEN = os.environ.get("WINDMILL_TOKEN", "")
 HTOKEN = os.environ.get("HUBSPOT_TOKEN", "")
 PORT = int(os.environ.get("PORT", 5000))
 OWNER_TO_BUSINESS_KEY = {
-    "syncmrv@integritasmrv.com": "integritasmrv",
-    "syncpower@integritasmrv.com": "poweriq",
+    "84958315": "integritasmrv",
+    "33593468": "poweriq",
 }
 def get_business_key(props):
     owner = props.get("hubspot_owner_id", "") or props.get("owner_email", "")
-    return OWNER_TO_BUSINESS_KEY.get(owner.lower() if owner else "")
+    return OWNER_TO_BUSINESS_KEY.get(owner or "")
 class H(BaseHTTPRequestHandler):
   def do_POST(self):
     if self.path != "/webhook/hubspot": self.send_error(404); return
