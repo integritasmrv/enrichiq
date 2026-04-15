@@ -3,4 +3,5 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 RUN pip install temporalio httpx asyncpg pyyaml polars
 COPY workers/ /app/workers/
+COPY mappings/ /opt/integritasmrv/mappings/
 CMD ["python", "-m", "workers.main"]
