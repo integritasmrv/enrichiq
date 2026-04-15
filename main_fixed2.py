@@ -207,7 +207,7 @@ async def chatwoot_webhook(request: Request):
         try:
             with httpx.Client(timeout=15.0) as client:
                 rag_resp = client.post(
-                    "http://localhost:9621/query/data",
+                    "http://intelligence-lightrag:9621/query/data",
                     json={"query": user_message, "mode": "hybrid"},
                     headers={"LIGHTRAG-WORKSPACE": "poweriq"}
                 )
@@ -229,7 +229,7 @@ Context from knowledge base:
         try:
             with httpx.Client(timeout=30.0) as client:
                 llm_resp = client.post(
-                    "http://localhost:3037/v1/chat/completions",
+                    "http://10.0.4.19:4000/v1/chat/completions",
                     headers={
                         "Authorization": "Bearer sk-litellm-aifabric-secret",
                         "Content-Type": "application/json"
