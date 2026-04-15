@@ -193,12 +193,13 @@ async def chatwoot_webhook(request: Request):
             return {"handled": False, "reason": "not message_created"}
         
         message = payload.get("message", {})
-        if message.get("message_type") != "incoming":
-            return {"handled": False, "reason": "not incoming"}
+        msg_type = message.get("message_type")
+        if msg_type != "incoming" and msg_type != 0 and msg_type != "0":
+            return {"handled": False, "reason": f"not incoming, got {msg_type}"}
         
         user_message = message.get("content", "")
-        conversation_id = payload.get("conversation_id")
-        account_id = payload.get("account_id")
+        conversation_id = payload.get("conversation", {}).get("id") or payload.get("conversation_id")
+        account_id = payload.get("account_id") or payload.get("account", {}).get("id")
         
         if not user_message or not conversation_id:
             return {"handled": False, "reason": "missing data"}
