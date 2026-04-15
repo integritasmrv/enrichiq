@@ -60,7 +60,7 @@ def apply_mapping(payload: dict, mapping_name: str) -> dict:
 
 
 def _load_mapping_with_extends(mapping_name: str) -> dict:
-    base_path = Path(f"/opt/integritasmrv/mappings/{mapping_name}.yaml")
+    base_path = Path(f"/app/mappings/{mapping_name}.yaml")
     config = yaml.safe_load(base_path.read_text())
 
     if "extends" in config:
@@ -77,7 +77,7 @@ def _load_mapping_with_extends(mapping_name: str) -> dict:
 def apply_mapping_batch(file_path: str, mapping_name: str) -> list[dict]:
     import polars as pl
     config = yaml.safe_load(
-        Path(f"/opt/integritasmrv/mappings/{mapping_name}.yaml").read_text()
+        Path(f"/app/mappings/{mapping_name}.yaml").read_text()
     )
     df = pl.read_csv(
         file_path,
