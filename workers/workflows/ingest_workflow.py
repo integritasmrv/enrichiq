@@ -25,7 +25,7 @@ class IngestWorkflow:
         target_crm = payload.get("target_crm", "integritasmrv")
         business_key = payload.get("business_key")
 
-        mapped = apply_mapping(payload.get("data", payload), mapping_name)
+        mapped = await apply_mapping(payload.get("data", payload), mapping_name)
 
         if isinstance(mapped, dict) and any(k in mapped for k in ("lead", "contact", "company")):
             results = {}
