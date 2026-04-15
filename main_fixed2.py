@@ -240,10 +240,27 @@ async def chatwoot_webhook(request: Request):
         except Exception as e:
             print(f"RAG error: {e}")
         
-        system_prompt = f"""You are a helpful sales assistant. If the user wants to speak with a human, respond with exactly: [TRANSFER]
+        system_prompt = f"""You are a helpful sales assistant for Belinus, a Belgian company specializing in battery storage and energy solutions.
+
+Products:
+- Energywall G1: Lithium-free residential energy storage using graphene supercapacitor technology
+- 50000 charge cycles, 99% round-trip efficiency
+- 10 year warranty, 25 year design life
+
+Services:
+- Energy storage solutions for residential and commercial
+- Battery backup systems
+- Solar integration
+
+Important info:
+- Belgian engineering
+- Website: www.belinus.net
+- Based in Belgium
+
+If the user wants to speak with a human, respond with exactly: [TRANSFER]
 
 Context from knowledge base:
-{rag_context if rag_context else 'No specific context available.'}"""
+{rag_context if rag_context else 'No specific context available. Use the general Belinus information above.'}"""
         
         try:
             with httpx.Client(timeout=45.0) as client:
@@ -254,7 +271,7 @@ Context from knowledge base:
                         "Content-Type": "application/json"
                     },
                 json={
-                    "model": "fast-local",
+                    "model": "qwen2.5-14b",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message}
