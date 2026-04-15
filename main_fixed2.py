@@ -212,7 +212,10 @@ async def chatwoot_webhook(request: Request):
                     headers={"LIGHTRAG-WORKSPACE": "poweriq"}
                 )
                 rag_data = rag_resp.json()
-                rag_context = "\n\n".join([c.get("content", "") for c in rag_data.get("data", {}).get("chunks", [])])
+                chunks = rag_data.get("data", {}).get("chunks", [])
+                # Limit to top 2 chunks, truncate to 500 chars each
+                texts = [c.get("content", "")[:500] for c in chunks[:2]]
+                rag_context = "\n\n".join(texts)
         except Exception as e:
             print(f"RAG error: {e}")
         
@@ -222,7 +225,7 @@ Context from knowledge base:
 {rag_context if rag_context else 'No specific context available.'}"""
         
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=45.0) as client:
                 llm_resp = client.post(
                     "http://10.0.4.19:4000/v1/chat/completions",
                     headers={
@@ -235,7 +238,7 @@ Context from knowledge base:
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message}
                         ],
-                        "max_tokens": 500,
+                        "max_tokens": 300,
                         "temperature": 0.7
                     }
                 )
