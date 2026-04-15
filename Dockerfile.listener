@@ -1,0 +1,4 @@
+FROM python:3.11-slim
+RUN pip install temporalio asyncpg pyyaml
+COPY workers/enrichment_listener.py /app/
+CMD ["python", "/app/enrichment_listener.py"]

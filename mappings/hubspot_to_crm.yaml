@@ -1,0 +1,42 @@
+source: hubspot
+target: nb_crm_contacts
+fields:
+  - source: properties.firstname
+    target: label
+    transform: strip
+  - source: properties.lastname
+    target: entity_attributes.lastname
+    transform: strip
+  - source: properties.hs_object_id
+    target: external_ids.hubspot_id
+    transform: string
+  - source: properties.email
+    target: entity_attributes.email
+    transform: strip
+  - source: properties.phone
+    target: entity_attributes.phone
+    transform: strip
+  - source: properties.jobtitle
+    target: entity_attributes.job_title
+    transform: strip
+  - source: properties.linkedin_primary_company
+    target: entity_attributes.linkedin_url
+    transform: strip
+  - source: properties.city
+    target: entity_attributes.city
+    transform: strip
+  - source: properties.state
+    target: entity_attributes.state
+    transform: strip
+  - source: properties.country
+    target: entity_attributes.country
+    transform: strip
+  - source: properties.website
+    target: entity_attributes.website
+    transform: strip
+  - source: properties.company
+    target: entity_attributes.company_name
+    transform: strip
+  - source: properties.hs_lead_status
+    target: source_system
+    transform: const:hubspot

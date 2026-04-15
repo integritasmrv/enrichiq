@@ -1,0 +1,42 @@
+import asyncio
+from temporalio.client import Client
+from temporalio.worker import Worker
+
+from workflows.ingest_workflow import IngestWorkflow
+from workflows.writeback_workflow import WritebackWorkflow
+from workflows.enrichment_workflow import EnrichmentWorkflow
+from activities.apply_mapping import apply_mapping, apply_mapping_batch
+from activities.upsert_crm import upsert_crm_entity, get_crm_entity
+from activities.update_crm import update_crm_enrichment
+from activities.dedup_merge_check import dedup_merge_check
+from activities.update_hubspot import update_hubspot_contact, update_hubspot_company
+
+
+async def main():
+    temporal_addr = "10.0.4.16:7233"
+    task_queue = "integritasmrv-ingest"
+
+    client = await Client.connect(temporal_addr)
+
+    worker = Worker(
+        client,
+        task_queue=task_queue,
+        workflows=[IngestWorkflow, WritebackWorkflow, EnrichmentWorkflow],
+        activities=[
+            apply_mapping,
+            apply_mapping_batch,
+            upsert_crm_entity,
+            get_crm_entity,
+            update_crm_enrichment,
+            dedup_merge_check,
+            update_hubspot_contact,
+            update_hubspot_company,
+        ],
+    )
+
+    print(f"Temporal worker connecting to {temporal_addr}, namespace=Integritasmrv, task_queue={task_queue}")
+    await worker.run()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
