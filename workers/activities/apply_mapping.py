@@ -2,6 +2,7 @@ import yaml
 import polars as pl
 from pathlib import Path
 from typing import Any
+from temporalio import activity
 
 
 def _extract(data: dict, path: str) -> Any:
@@ -48,6 +49,7 @@ def _set_nested(data: dict, path: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
+@activity.defn
 def apply_mapping(payload: dict, mapping_name: str) -> dict:
     config = yaml.safe_load(
         Path(f"/opt/integritasmrv/mappings/{mapping_name}.yaml").read_text()
@@ -60,6 +62,7 @@ def apply_mapping(payload: dict, mapping_name: str) -> dict:
     return result
 
 
+@activity.defn
 def apply_mapping_batch(file_path: str, mapping_name: str) -> list[dict]:
     config = yaml.safe_load(
         Path(f"/opt/integritasmrv/mappings/{mapping_name}.yaml").read_text()

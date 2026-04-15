@@ -1,12 +1,12 @@
 import httpx
-
-
 import os
+from temporalio import activity
 
 HUBSPOT_BASE = "https://api.hubapi.com"
 PAT = os.environ.get("HUBSPOT_PAT", "")
 
 
+@activity.defn
 def update_hubspot_contact(hubspot_id: str, enriched_data: dict) -> dict:
     properties = {}
     ea = enriched_data.get("entity_attributes", {})
@@ -44,6 +44,7 @@ def update_hubspot_contact(hubspot_id: str, enriched_data: dict) -> dict:
         return {"updated": False, "status_code": resp.status_code, "body": resp.text}
 
 
+@activity.defn
 def update_hubspot_company(hubspot_id: str, enriched_data: dict) -> dict:
     properties = {}
     ea = enriched_data.get("entity_attributes", {})

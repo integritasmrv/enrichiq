@@ -1,5 +1,6 @@
 import asyncpg
 from typing import Any
+from temporalio import activity
 
 
 CRM_CONFIGS = {
@@ -20,6 +21,7 @@ CRM_CONFIGS = {
 }
 
 
+@activity.defn
 async def upsert_crm_entity(
     mapped_data: dict,
     target_crm: str,
@@ -73,6 +75,7 @@ async def upsert_crm_entity(
         await conn.close()
 
 
+@activity.defn
 async def get_crm_entity(
     target_crm: str,
     table: str,

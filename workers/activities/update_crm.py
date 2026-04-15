@@ -1,4 +1,5 @@
 import asyncpg
+from temporalio import activity
 
 
 CRM_CONFIGS = {
@@ -19,6 +20,7 @@ CRM_CONFIGS = {
 }
 
 
+@activity.defn
 async def update_crm_enrichment(
     entity_id: int,
     entity_attributes: dict,

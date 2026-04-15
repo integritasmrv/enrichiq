@@ -1,5 +1,6 @@
 import asyncpg
 from typing import Literal
+from temporalio import activity
 
 
 CRM_CONFIGS = {
@@ -20,6 +21,7 @@ CRM_CONFIGS = {
 }
 
 
+@activity.defn
 async def dedup_merge_check(
     entity_id: int,
     external_ids: dict,
