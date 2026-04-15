@@ -1,0 +1,18 @@
+fields:
+  - source: email
+    target: entity_attributes.email
+    transform: strip
+  - source: phone
+    target: entity_attributes.phone
+    transform: strip
+  - source: website
+    target: entity_attributes.website
+    transform: strip
+  - source: country
+    target: entity_attributes.country
+    transform: upper
+  - source: city
+    target: entity_attributes.city
+    transform: strip
+
+passthrough: true

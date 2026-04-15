@@ -50,15 +50,27 @@ def _set_nested(data: dict, path: str, value: Any) -> None:
 
 @activity.defn
 def apply_mapping(payload: dict, mapping_name: str) -> dict:
-    config = yaml.safe_load(
-        Path(f"/opt/integritasmrv/mappings/{mapping_name}.yaml").read_text()
-    )
+    config = _load_mapping_with_extends(mapping_name)
     result = {}
     for field in config.get("fields", []):
         value = _extract(payload, field["source"])
         value = _transform(value, field.get("transform", ""))
         _set_nested(result, field["target"], value)
     return result
+
+
+def _load_mapping_with_extends(mapping_name: str) -> dict:
+    base_path = Path(f"/opt/integritasmrv/mappings/{mapping_name}.yaml")
+    config = yaml.safe_load(base_path.read_text())
+
+    if "extends" in config:
+        parent_name = config.pop("extends")
+        parent_config = _load_mapping_with_extends(parent_name)
+        parent_fields = {(f["source"], f.get("target")): f for f in parent_config.get("fields", [])}
+        child_fields = {(f["source"], f.get("target")): f for f in config.get("fields", [])}
+        merged = {**parent_fields, **child_fields}
+        config["fields"] = list(merged.values())
+    return config
 
 
 @activity.defn

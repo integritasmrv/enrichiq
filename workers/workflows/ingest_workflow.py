@@ -15,9 +15,6 @@ class IngestWorkflow:
 
         mapped = apply_mapping(payload.get("data", payload), mapping_name)
 
-        if isinstance(mapped, dict) and "targets" in mapped.get("contact", {}):
-            mapped = mapped["contact"]
-
         if isinstance(mapped, dict) and any(k in mapped for k in ("lead", "contact", "company")):
             results = {}
             for target_name, target_data in mapped.items():

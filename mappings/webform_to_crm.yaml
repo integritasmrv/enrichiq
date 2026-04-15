@@ -1,0 +1,62 @@
+extends: generic_to_crm
+
+targets:
+  lead:
+    table: nb_crm_leads
+    fields:
+      - source: first_name
+        target: name
+        transform: strip
+      - source: email
+        target: email
+        transform: strip
+      - source: company
+        target: company
+        transform: strip
+      - source: phone
+        target: phone
+        transform: strip
+      - source: job_title
+        target: title
+        transform: strip
+      - source: message
+        target: description
+        transform: strip
+      - source: form_id
+        target: status
+        transform: const:new
+      - source: form_id
+        target: source
+        transform: strip
+
+  contact:
+    table: nb_crm_contacts
+    fields:
+      - source: first_name
+        target: label
+        transform: strip
+      - source: last_name
+        target: entity_attributes.lastname
+        transform: strip
+      - source: form_id
+        target: lead_source
+        transform: strip
+      - source: message
+        target: entity_attributes.message
+        transform: strip
+
+  company:
+    table: nb_crm_customers
+    fields:
+      - source: company
+        target: label
+        transform: strip
+      - source: company
+        target: entity_attributes.name
+        transform: strip
+      - source: form_id
+        target: source_system
+        transform: const:webform
+      - source: message
+        target: entity_attributes.description
+        transform: strip
