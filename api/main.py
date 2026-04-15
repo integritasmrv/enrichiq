@@ -35,13 +35,25 @@ class EnrichIQWriteback(BaseModel):
 @app.post("/webhook/hubspot")
 async def webhook_hubspot(payload: HubspotWebhookPayload, request: Request):
     try:
-        routing_rules = payload.data.get("routing_rules", {})
-        target_crm = payload.target_crm or routing_rules.get("target_crm", "integritasmrv")
+        owner_id = payload.data.get("properties", {}).get("hubspot_owner_id", "")
+        print(f"[WEBHOOK] owner_id={owner_id}, object_id={payload.data.get('properties', {}).get('hs_object_id', '')}")
 
-        business_key = (
-            payload.data.get("properties", {})
-            .get("hs_object_id")
+        conn = await asyncpg.connect(
+            host="10.0.13.2", port=5432, database="integritasmrv_crm",
+            user="integritasmrv_crm_user", password="Int3gr1t@smrv_S3cure_P@ssw0rd_2026"
         )
+        route_row = await conn.fetchrow(
+            "SELECT target_crm FROM crm_sync_routing WHERE hubspot_owner_id = $1 AND active = true LIMIT 1",
+            str(owner_id)
+        )
+        await conn.close()
+
+        if route_row:
+            target_crm = route_row["target_crm"].lower()
+        else:
+            target_crm = payload.data.get("routing_rules", {}).get("target_crm", "integritasmrv")
+
+        business_key = payload.data.get("properties", {}).get("hs_object_id")
 
         client = await Client.connect(TEMPORAL_ADDR)
         wf_id = await client.start_workflow(
@@ -57,8 +69,9 @@ async def webhook_hubspot(payload: HubspotWebhookPayload, request: Request):
             task_queue=TASK_QUEUE,
         )
 
-        return {"status": "accepted", "workflow_id": str(wf_id), "target_crm": target_crm}
+        return {"status": "accepted", "workflow_id": str(wf_id), "target_crm": target_crm, "owner_id": owner_id}
     except Exception as e:
+        print(f"[WEBHOOK] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
