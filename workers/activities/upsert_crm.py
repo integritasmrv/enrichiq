@@ -95,12 +95,13 @@ async def upsert_crm_entity(
                 else:
                     extra_data[key] = value
         
-        # Add enrichment_status
-        enrichment_status = mapped_data.get("enrichment_status", "To Be Enriched")
-        set_clauses.append(f"enrichment_status = ${param_idx}")
-        col_names.append("enrichment_status")
-        col_values.append(enrichment_status)
-        param_idx += 1
+        # Add enrichment_status (only for contacts and customers, not leads)
+        if table != "nb_crm_leads":
+            enrichment_status = mapped_data.get("enrichment_status", "To Be Enriched")
+            set_clauses.append(f"enrichment_status = ${param_idx}")
+            col_names.append("enrichment_status")
+            col_values.append(enrichment_status)
+            param_idx += 1
         
         # Set extra JSONB
         if extra_data:
