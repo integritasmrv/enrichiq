@@ -5,8 +5,8 @@ from temporalio import workflow
 class IngestWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
-        from activities.apply_mapping import apply_mapping
-        from activities.upsert_crm import upsert_crm_entity
+        from workers.activities.apply_mapping import apply_mapping
+        from workers.activities.upsert_crm import upsert_crm_entity
 
         source = payload.get("source", "hubspot")
         mapping_name = payload.get("mapping_name", "hubspot_to_crm")

@@ -12,7 +12,7 @@ class EnrichmentWorkflow:
         hubspot_id = payload.get("hubspot_id")
         entity_type = payload.get("entity_type", "contact")
 
-        from activities.upsert_crm import get_crm_entity
+        from workers.activities.upsert_crm import get_crm_entity
 
         entity = await get_crm_entity(
             target_crm=crm_name,
