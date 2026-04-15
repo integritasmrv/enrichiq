@@ -1,5 +1,4 @@
 import yaml
-import polars as pl
 from pathlib import Path
 from typing import Any
 from temporalio import activity
@@ -64,6 +63,7 @@ def apply_mapping(payload: dict, mapping_name: str) -> dict:
 
 @activity.defn
 def apply_mapping_batch(file_path: str, mapping_name: str) -> list[dict]:
+    import polars as pl
     config = yaml.safe_load(
         Path(f"/opt/integritasmrv/mappings/{mapping_name}.yaml").read_text()
     )
