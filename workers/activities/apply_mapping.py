@@ -35,6 +35,9 @@ def _transform(value: Any, transform: str) -> Any:
             return None
     if transform.startswith("const:"):
         return transform.split(":", 1)[1]
+    if transform.startswith("concat_with:"):
+        concat_field = transform.split(":", 1)[1]
+        return str(value) + " " + str(concat_field) if value else str(concat_field)
     return value
 
 

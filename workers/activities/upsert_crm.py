@@ -27,9 +27,13 @@ async def upsert_crm_entity(
     mapped_data: dict,
     target_crm: str,
     table: str = "nb_crm_contacts",
-    business_key_field: str = "external_ids",
     business_key_value: str = None,
 ) -> dict:
+    """
+    Upsert for NocoBase CRM tables.
+    Uses hubspot_id as the unique key for upsert matching.
+    Maps flat fields to direct columns, extra fields to JSONB 'extra' column.
+    """
     config = CRM_CONFIGS.get(target_crm)
     if not config:
         raise ValueError(f"Unknown CRM: {target_crm}")
@@ -43,35 +47,104 @@ async def upsert_crm_entity(
     )
 
     try:
-        entity_attrs = mapped_data.get("entity_attributes", {})
-        external_ids = mapped_data.get("external_ids", {})
+        # Direct columns that map straight to table columns
+        direct_columns = [
+            "name", "email", "phone", "title", "website", "city", "country",
+            "description", "industry", "linkedin", "hubspot_id", "hs_owner_id",
+            "customer_id", "account_number", "vat_number", "location_country"
+        ]
+        
+        # Fields that go into the 'extra' JSONB column
+        extra_data = {}
+        
+        # Build the SET clause for UPDATE and column list for INSERT
+        set_clauses = []
+        col_names = []
+        col_values = []
+        param_idx = 1
+        
+        # Map known fields
+        known_fields = {
+            "name": "name", "email": "email", "phone": "phone", 
+            "title": "title", "website": "website", "city": "city",
+            "country": "country", "description": "description", 
+            "industry": "industry", "linkedin": "linkedin",
+            "hubspot_id": "hubspot_id", "hs_owner_id": "hs_owner_id",
+            "customer_id": "customer_id", "vat_number": "vat_number",
+            "location_country": "location_country"
+        }
+        
+        for source_key, target_col in known_fields.items():
+            if source_key in mapped_data and mapped_data[source_key] is not None:
+                col_names.append(target_col)
+                col_values.append(mapped_data[source_key])
+                set_clauses.append(f"{target_col} = ${param_idx}")
+                param_idx += 1
+        
+        # Handle extra fields (anything not a direct column)
+        for key, value in mapped_data.items():
+            if key not in known_fields and value is not None:
+                extra_data[key] = value
+        
+        # Add enrichment_status
         enrichment_status = mapped_data.get("enrichment_status", "pending")
-
-        external_ids["business_key"] = business_key_value
-
-        record = await conn.fetchrow(
+        set_clauses.append(f"enrichment_status = ${param_idx}")
+        col_names.append("enrichment_status")
+        col_values.append(enrichment_status)
+        param_idx += 1
+        
+        # Set extra JSONB
+        if extra_data:
+            set_clauses.append(f"extra = ${param_idx}")
+            col_names.append("extra")
+            col_values.append(asyncpg.JsonB(extra_data))
+            param_idx += 1
+        
+        # Always update timestamp
+        set_clauses.append("updatedAt = NOW()")
+        
+        hubspot_id = mapped_data.get("hubspot_id")
+        
+        if hubspot_id:
+            # Check if record exists
+            existing = await conn.fetchrow(
+                f"SELECT id FROM {table} WHERE hubspot_id = $1",
+                str(hubspot_id)
+            )
+            
+            if existing:
+                # UPDATE
+                update_sql = f"""
+                    UPDATE {table} 
+                    SET {', '.join(set_clauses)}
+                    WHERE hubspot_id = ${param_idx}
+                    RETURNING id, FALSE as created
+                """
+                col_values.append(str(hubspot_id))
+                record = await conn.fetchrow(update_sql, *col_values)
+                return {"id": record["id"], "created": False}
+            else:
+                # INSERT
+                col_names.append("createdAt")
+                col_values.append("NOW()")
+                insert_sql = f"""
+                    INSERT INTO {table} ({', '.join(col_names)})
+                    VALUES ({', '.join(['$' + str(i) for i in range(1, len(col_values) + 1)])})
+                    RETURNING id, TRUE as created
+                """
+                record = await conn.fetchrow(insert_sql, *col_values)
+                return {"id": record["id"], "created": record["created"]}
+        else:
+            # No hubspot_id, just insert
+            col_names.append("createdAt")
+            col_values.append("NOW()")
+            insert_sql = f"""
+                INSERT INTO {table} ({', '.join(col_names)})
+                VALUES ({', '.join(['$' + str(i) for i in range(1, len(col_values) + 1)])})
+                RETURNING id, TRUE as created
             """
-            INSERT INTO nb_crm_contacts (
-                label, source_system, external_ids, entity_attributes,
-                enrichment_status, created_at, updated_at
-            ) VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
-            ON CONFLICT (external_ids->>'business_key')
-            DO UPDATE SET
-                label = EXCLUDED.label,
-                source_system = EXCLUDED.source_system,
-                external_ids = EXCLUDED.external_ids,
-                entity_attributes = EXCLUDED.entity_attributes,
-                enrichment_status = EXCLUDED.enrichment_status,
-                updated_at = NOW()
-            RETURNING id, created_at
-            """,
-            mapped_data.get("label"),
-            mapped_data.get("source_system"),
-            external_ids,
-            entity_attrs,
-            enrichment_status,
-        )
-        return {"id": record["id"], "created": record["created_at"]}
+            record = await conn.fetchrow(insert_sql, *col_values)
+            return {"id": record["id"], "created": record["created"]}
     finally:
         await conn.close()
 

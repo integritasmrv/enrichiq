@@ -1,55 +1,81 @@
-extends: generic_to_crm
-
 targets:
   contact:
     table: nb_crm_contacts
     fields:
       - source: properties.firstname
-        target: label
+        target: name
         transform: strip
       - source: properties.lastname
-        target: entity_attributes.lastname
+        target: name
         transform: strip
+        concat_with: " "
       - source: properties.hs_object_id
-        target: external_ids.hubspot_id
+        target: hubspot_id
         transform: string
-      - source: properties.hubspot_company_id
-        target: external_ids.hubspot_company_id
+      - source: properties.hubspot_owner_id
+        target: hs_owner_id
         transform: string
+      - source: properties.email
+        target: email
+        transform: strip
+      - source: properties.phone
+        target: phone
+        transform: strip
       - source: properties.jobtitle
-        target: entity_attributes.job_title
+        target: title
         transform: strip
       - source: properties.linkedin_primary_company
-        target: entity_attributes.linkedin_url
+        target: linkedin
+        transform: strip
+      - source: properties.city
+        target: city
+        transform: strip
+      - source: properties.country
+        target: location_country
+        transform: strip
+      - source: properties.website
+        target: website
         transform: strip
       - source: properties.company
-        target: entity_attributes.company_name
+        target: extra.company_name
         transform: strip
       - source: properties.hs_lead_status
-        target: source_system
+        target: extra.source_system
         transform: const:hubspot
 
   company:
     table: nb_crm_customers
     fields:
       - source: properties.name
-        target: label
+        target: name
         transform: strip
       - source: properties.hs_object_id
-        target: external_ids.hubspot_company_id
+        target: hubspot_id
+        transform: string
+      - source: properties.hubspot_owner_id
+        target: hs_owner_id
         transform: string
       - source: properties.vat_number__c
-        target: external_ids.vat_number
+        target: vat_number
         transform: strip
+      - source: properties.country
+        target: country
+        transform: upper
       - source: properties.industry
-        target: entity_attributes.industry
+        target: industry
+        transform: strip
+      - source: properties.website
+        target: website
+        transform: strip
+      - source: properties.phone
+        target: phone
         transform: strip
       - source: properties.description
-        target: entity_attributes.description
+        target: description
         transform: strip
       - source: properties.linkedin_company_page
-        target: entity_attributes.linkedin_url
+        target: linkedin_url
         transform: strip
       - source: properties.hs_lead_status
-        target: source_system
+        target: extra.source_system
         transform: const:hubspot
