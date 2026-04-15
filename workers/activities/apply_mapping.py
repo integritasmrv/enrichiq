@@ -52,7 +52,7 @@ def _set_nested(data: dict, path: str, value: Any) -> None:
 
 
 @activity.defn
-def apply_mapping(payload: dict, mapping_name: str) -> dict:
+async def apply_mapping(payload: dict, mapping_name: str) -> dict:
     config = _load_mapping_with_extends(mapping_name)
     result = {}
     for field in config.get("fields", []):
