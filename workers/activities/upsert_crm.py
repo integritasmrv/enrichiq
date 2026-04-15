@@ -1,5 +1,7 @@
 import asyncio
+import json
 import asyncpg
+from datetime import datetime, timezone
 from typing import Any
 from temporalio import activity
 
@@ -97,7 +99,7 @@ async def upsert_crm_entity(
         if extra_data:
             set_clauses.append(f"extra = ${param_idx}")
             col_names.append("extra")
-            col_values.append(asyncpg.JsonB(extra_data))
+            col_values.append(json.dumps(extra_data))
             param_idx += 1
         
         # Always update timestamp
@@ -126,7 +128,7 @@ async def upsert_crm_entity(
             else:
                 # INSERT
                 col_names.append("createdAt")
-                col_values.append("NOW()")
+                col_values.append(datetime.now(timezone.utc))
                 insert_sql = f"""
                     INSERT INTO {table} ({', '.join(col_names)})
                     VALUES ({', '.join(['$' + str(i) for i in range(1, len(col_values) + 1)])})
@@ -137,7 +139,7 @@ async def upsert_crm_entity(
         else:
             # No hubspot_id, just insert
             col_names.append("createdAt")
-            col_values.append("NOW()")
+            col_values.append(datetime.now(timezone.utc))
             insert_sql = f"""
                 INSERT INTO {table} ({', '.join(col_names)})
                 VALUES ({', '.join(['$' + str(i) for i in range(1, len(col_values) + 1)])})
