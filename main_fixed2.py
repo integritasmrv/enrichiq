@@ -216,12 +216,7 @@ async def chatwoot_webhook(request: Request):
         except Exception as e:
             print(f"RAG error: {e}")
         
-        system_prompt = f"""You are Belinus AI, a helpful sales assistant for Belinus - a company specializing in battery storage solutions and energy systems.
-
-If the user wants to speak with a human agent, respond with exactly: [TRANSFER]
-
-Use the context below to answer questions about Belinus products and services.
-If you don't know something, be honest and offer to connect them with a human.
+        system_prompt = f"""You are a helpful sales assistant. If the user wants to speak with a human, respond with exactly: [TRANSFER]
 
 Context from knowledge base:
 {rag_context if rag_context else 'No specific context available.'}"""
