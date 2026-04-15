@@ -227,7 +227,7 @@ async def chatwoot_webhook(request: Request):
                 if rag_resp.status_code == 200:
                     rag_data = rag_resp.json()
                     chunks = rag_data.get("data", {}).get("chunks", [])
-                    texts = [c.get("content", "")[:300] for c in chunks[:2]]
+                    texts = [c.get("content", "")[:250] for c in chunks[:2]]
                     rag_context = "\n\n".join(texts)
         except Exception as e:
             print(f"RAG error: {e}")
@@ -264,12 +264,12 @@ Context:
                         "Content-Type": "application/json"
                     },
                 json={
-                    "model": "qwen3-8b",
+                    "model": "minimax-m2.7",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message}
                         ],
-                        "max_tokens": 150,
+                        "max_tokens": 200,
                         "temperature": 0.7
                     }
                 )
