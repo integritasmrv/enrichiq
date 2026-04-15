@@ -42,7 +42,9 @@ class IngestWorkflow:
                 non_null = {k: v for k, v in target_data.items() if v is not None}
                 if not non_null:
                     continue
-                target_data["enrichment_status"] = "To Be Enriched"
+                # Only add enrichment_status for contacts and customers, not leads
+                if target_name != "lead":
+                    target_data["enrichment_status"] = "To Be Enriched"
                 flat_data = _flatten(target_data)
                 key_prefix = "webform" if source == "webform" else "hubspot"
                 key_value = f"{key_prefix}-{target_name}-{business_key}" if business_key else None
