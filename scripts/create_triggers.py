@@ -15,28 +15,35 @@ CRM_DBS = {
     }
 }
 
-TRIGGER_SQL_CONTACTS = '''
+TRIGGER_FUNCTION = '''
 CREATE OR REPLACE FUNCTION fn_notify_enrichment_queue() RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.enrichment_status = 'To Be Enriched' THEN
-    PERFORM pg_notify('enrichment_queue', NEW.id || '|' || COALESCE(NEW.hubspot_id, '') || '|' || CURRENT_TIMESTAMP);
+  IF NEW.enrichment_status = 'pending' THEN
+    PERFORM pg_notify(
+      'enrichment_queue',
+      NEW.id || '|' || COALESCE((NEW.external_ids->>'hubspot_id'), '') || '|' || CURRENT_TIMESTAMP
+    );
   END IF;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+'''
 
+TRIGGER_SQL_CONTACTS = '''
 DROP TRIGGER IF EXISTS trg_notify_enrichment_contact ON nb_crm_contacts;
 CREATE TRIGGER trg_notify_enrichment_contact
-  AFTER INSERT OR UPDATE OF enrichment_status ON nb_crm_contacts
-  FOR EACH ROW WHEN (NEW.enrichment_status = 'To Be Enriched')
+  AFTER INSERT OR UPDATE ON nb_crm_contacts
+  FOR EACH ROW
+  WHEN (NEW.enrichment_status = 'pending')
   EXECUTE FUNCTION fn_notify_enrichment_queue();
 '''
 
 TRIGGER_SQL_CUSTOMERS = '''
 DROP TRIGGER IF EXISTS trg_notify_enrichment_company ON nb_crm_customers;
 CREATE TRIGGER trg_notify_enrichment_company
-  AFTER INSERT OR UPDATE OF enrichment_status ON nb_crm_customers
-  FOR EACH ROW WHEN (NEW.enrichment_status = 'To Be Enriched')
+  AFTER INSERT OR UPDATE ON nb_crm_customers
+  FOR EACH ROW
+  WHEN (NEW.enrichment_status = 'pending')
   EXECUTE FUNCTION fn_notify_enrichment_queue();
 '''
 
@@ -45,6 +52,12 @@ def create_triggers():
         print(f"\n=== Setting up triggers for {crm_name} ===")
         conn = psycopg2.connect(**db_config)
         cur = conn.cursor()
+        
+        try:
+            cur.execute(TRIGGER_FUNCTION)
+            print(f"Function created in {crm_name}")
+        except Exception as e:
+            print(f"Function error in {crm_name}: {e}")
         
         try:
             cur.execute(TRIGGER_SQL_CONTACTS)
