@@ -232,8 +232,8 @@ Context from knowledge base:
                         "Authorization": "Bearer sk-litellm-aifabric-secret",
                         "Content-Type": "application/json"
                     },
-                    json={
-                        "model": "gpu/qwen2.5-32b",
+                json={
+                    "model": "fast-local",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message}
