@@ -1,3 +1,4 @@
+import asyncio
 import asyncpg
 from typing import Any
 from temporalio import activity
@@ -103,10 +104,47 @@ async def get_crm_entity(
 
 @activity.defn
 async def check_entity_exists(
-    external_ids: dict,
+    external_ids: dict = None,
+    contact_data: dict = None,
+    company_data: dict = None,
     target_crm: str = "integritasmrv",
-    table: str = "nb_crm_contacts",
 ) -> dict:
+    """
+    Check if contact AND/OR company already exists in CRM.
+    
+    Checks both nb_crm_contacts and nb_crm_customers tables.
+    Returns exact matches AND fuzzy matches so caller can decide:
+      - Contact is new but company exists → link to company
+      - Contact exists → update/merge
+      - Company exists → update/merge
+      - Neither exists → create both
+    
+    Args:
+        external_ids: Dict with any of: hubspot_id, hubspot_company_id, kbo_id, vat_number
+        contact_data: Dict with: email, phone, linkedin_url, firstname, lastname
+        company_data: Dict with: name, website, linkedin_url, country, city
+        target_crm: "integritasmrv" or "poweriq"
+    
+    Returns:
+        {
+            "contact": {
+                "exact_match": {"exists": bool, "entity_id": int|None, "label": str|None},
+                "fuzzy_matches": [{"entity_id": int, "label": str, "score": float, "match_type": str}],
+                "action": "create" / "update" / "merge" / "link_to_company"
+            },
+            "company": {
+                "exact_match": {"exists": bool, "entity_id": int|None, "label": str|None},
+                "fuzzy_matches": [{"entity_id": int, "label": str, "score": float, "match_type": str}],
+                "action": "create" / "update" / "merge"
+            }
+        }
+    """
+    import asyncio
+    
+    external_ids = external_ids or {}
+    contact_data = contact_data or {}
+    company_data = company_data or {}
+
     config = CRM_CONFIGS.get(target_crm)
     if not config:
         raise ValueError(f"Unknown CRM: {target_crm}")
@@ -118,7 +156,8 @@ async def check_entity_exists(
         user=config["user"],
         password=config["password"],
     )
-    try:
+
+    async def check_contact_exact() -> dict:
         lookups = []
         params = []
         if external_ids.get("hubspot_id"):
@@ -130,20 +169,198 @@ async def check_entity_exists(
         if external_ids.get("vat_number"):
             params.append(external_ids["vat_number"])
             lookups.append(f"external_ids->>'vat_number' = ${len(params)}")
-        if external_ids.get("email"):
-            params.append(external_ids["email"])
-            lookups.append(f"entity_attributes->>'email' = ${len(params)}")
-
+        if contact_data.get("email"):
+            params.append(contact_data["email"].lower().strip())
+            lookups.append(f"lower(entity_attributes->>'email') = ${len(params)}")
         if not lookups:
-            return {"exists": False, "entity_id": None}
-
-        query = f"SELECT id, label, enrichment_status FROM {table} WHERE {' OR '.join(lookups)} LIMIT 1"
+            return {"exists": False, "entity_id": None, "label": None}
+        query = f"SELECT id, label, enrichment_status FROM nb_crm_contacts WHERE {' OR '.join(lookups)} LIMIT 1"
         row = await conn.fetchrow(query, *params)
         return {
             "exists": row is not None,
             "entity_id": row["id"] if row else None,
             "label": row["label"] if row else None,
             "enrichment_status": row["enrichment_status"] if row else None,
+        }
+
+    async def check_contact_fuzzy() -> list:
+        matches = []
+        name = contact_data.get("firstname", "") + " " + contact_data.get("lastname", "")
+        name = name.strip().lower()
+        phone = contact_data.get("phone")
+        linkedin = contact_data.get("linkedin_url")
+
+        if not name and not phone and not linkedin:
+            return []
+
+        base_query = "SELECT id, label, entity_attributes FROM nb_crm_contacts WHERE "
+        conditions = []
+        params = []
+
+        if name:
+            params.append(name)
+            conditions.append(f"lower(label) = ${len(params)}")
+        if phone:
+            params.append(phone)
+            conditions.append(f"entity_attributes->>'phone' = ${len(params)}")
+
+        if not conditions:
+            return []
+
+        try:
+            query = base_query + " OR ".join(conditions) + " LIMIT 5"
+            rows = await conn.fetch(query, *params)
+            for row in rows:
+                score = 0.0
+                match_type = []
+                stored_name = (row["label"] or "").lower()
+                stored_phone = (row["entity_attributes"] or {}).get("phone", "")
+                stored_linkedin = (row["entity_attributes"] or {}).get("linkedin_url", "")
+
+                if name and stored_name == name:
+                    score += 0.7
+                    match_type.append("name")
+                if phone and stored_phone == phone:
+                    score += 0.3
+                    match_type.append("phone")
+                if linkedin and stored_linkedin == linkedin:
+                    score += 0.5
+                    match_type.append("linkedin")
+
+                if score >= 0.5:
+                    matches.append({
+                        "entity_id": row["id"],
+                        "label": row["label"],
+                        "score": min(score, 1.0),
+                        "match_type": "+".join(match_type) if match_type else "fuzzy"
+                    })
+        except Exception:
+            pass
+        return sorted(matches, key=lambda x: x["score"], reverse=True)[:3]
+
+    async def check_company_exact() -> dict:
+        lookups = []
+        params = []
+        if external_ids.get("hubspot_company_id"):
+            params.append(str(external_ids["hubspot_company_id"]))
+            lookups.append(f"external_ids->>'hubspot_company_id' = ${len(params)}")
+        if external_ids.get("kbo_id"):
+            params.append(external_ids["kbo_id"])
+            lookups.append(f"external_ids->>'kbo_id' = ${len(params)}")
+        if external_ids.get("vat_number"):
+            params.append(external_ids["vat_number"])
+            lookups.append(f"external_ids->>'vat_number' = ${len(params)}")
+        website = company_data.get("website", "").lower().strip()
+        if website:
+            params.append(website)
+            lookups.append(f"lower(entity_attributes->>'website') = ${len(params)}")
+        if not lookups:
+            return {"exists": False, "entity_id": None, "label": None}
+        query = f"SELECT id, label, enrichment_status FROM nb_crm_customers WHERE {' OR '.join(lookups)} LIMIT 1"
+        row = await conn.fetchrow(query, *params)
+        return {
+            "exists": row is not None,
+            "entity_id": row["id"] if row else None,
+            "label": row["label"] if row else None,
+            "enrichment_status": row["enrichment_status"] if row else None,
+        }
+
+    async def check_company_fuzzy() -> list:
+        matches = []
+        name = (company_data.get("name") or "").strip().lower()
+        website = (company_data.get("website") or "").lower().strip()
+        country = (company_data.get("country") or "").lower().strip()
+        city = (company_data.get("city") or "").lower().strip()
+        linkedin = company_data.get("linkedin_url")
+
+        if not name and not website:
+            return []
+
+        conditions = []
+        params = []
+
+        if name:
+            params.append(name)
+            conditions.append(f"lower(label) = ${len(params)}")
+        if website:
+            params.append(website)
+            conditions.append(f"lower(entity_attributes->>'website') = ${len(params)}")
+
+        if not conditions:
+            return []
+
+        try:
+            query = f"SELECT id, label, entity_attributes FROM nb_crm_customers WHERE {' OR '.join(conditions)} LIMIT 10"
+            rows = await conn.fetch(query, *params)
+            for row in rows:
+                score = 0.0
+                match_type = []
+                stored_name = (row["label"] or "").lower()
+                stored_website = (row["entity_attributes"] or {}).get("website", "").lower()
+                stored_country = (row["entity_attributes"] or {}).get("country", "").lower()
+                stored_city = (row["entity_attributes"] or {}).get("city", "").lower()
+                stored_linkedin = (row["entity_attributes"] or {}).get("linkedin_url", "")
+
+                if name and stored_name == name:
+                    score += 0.5
+                    match_type.append("name")
+                if website and stored_website == website:
+                    score += 0.5
+                    match_type.append("website")
+                if country and stored_country == country:
+                    score += 0.1
+                    match_type.append("country")
+                if city and stored_city == city:
+                    score += 0.1
+                    match_type.append("city")
+                if linkedin and stored_linkedin == linkedin:
+                    score += 0.3
+                    match_type.append("linkedin")
+
+                if score >= 0.5:
+                    matches.append({
+                        "entity_id": row["id"],
+                        "label": row["label"],
+                        "score": min(score, 1.0),
+                        "match_type": "+".join(match_type) if match_type else "fuzzy"
+                    })
+        except Exception:
+            pass
+        return sorted(matches, key=lambda x: x["score"], reverse=True)[:3]
+
+    try:
+        contact_exact, contact_fuzzy, company_exact, company_fuzzy = await asyncio.gather(
+            check_contact_exact(), check_contact_fuzzy(),
+            check_company_exact(), check_company_fuzzy()
+        )
+
+        contact_action = "create"
+        if contact_exact["exists"]:
+            contact_action = "update"
+        elif contact_fuzzy and contact_fuzzy[0]["score"] >= 0.9:
+            contact_action = "merge"
+        elif contact_fuzzy and contact_fuzzy[0]["score"] >= 0.5:
+            contact_action = "review"
+
+        company_action = "create"
+        if company_exact["exists"]:
+            company_action = "update"
+        elif company_fuzzy and company_fuzzy[0]["score"] >= 0.9:
+            company_action = "merge"
+        elif company_fuzzy and company_fuzzy[0]["score"] >= 0.5:
+            company_action = "review"
+
+        return {
+            "contact": {
+                "exact_match": contact_exact,
+                "fuzzy_matches": contact_fuzzy,
+                "action": contact_action,
+            },
+            "company": {
+                "exact_match": company_exact,
+                "fuzzy_matches": company_fuzzy,
+                "action": company_action,
+            },
         }
     finally:
         await conn.close()
