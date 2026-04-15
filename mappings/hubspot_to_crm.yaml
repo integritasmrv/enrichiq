@@ -13,6 +13,9 @@ targets:
       - source: properties.hs_object_id
         target: external_ids.hubspot_id
         transform: string
+      - source: properties.hubspot_company_id
+        target: external_ids.hubspot_company_id
+        transform: string
       - source: properties.jobtitle
         target: entity_attributes.job_title
         transform: strip
