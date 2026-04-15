@@ -189,12 +189,21 @@ async def chatwoot_webhook(request: Request):
     try:
         payload = await request.json()
         
+        print(f"=== WEBHOOK DEBUG ===")
+        print(f"event: {payload.get('event')}")
+        print(f"message_type: {payload.get('message', {}).get('message_type')} (type: {type(payload.get('message', {}).get('message_type'))})")
+        print(f"content: {payload.get('message', {}).get('content')}")
+        print(f"conversation: {payload.get('conversation')}")
+        print(f"conversation_id: {payload.get('conversation_id')}")
+        print(f"account_id: {payload.get('account_id')}")
+        print(f"====================")
+        
         if payload.get("event") != "message_created":
             return {"handled": False, "reason": "not message_created"}
         
         message = payload.get("message", {})
         msg_type = message.get("message_type")
-        if msg_type != "incoming" and msg_type != 0 and msg_type != "0":
+        if str(msg_type) not in ("0", "incoming", "1"):
             return {"handled": False, "reason": f"not incoming, got {msg_type}"}
         
         user_message = message.get("content", "")
@@ -202,7 +211,7 @@ async def chatwoot_webhook(request: Request):
         account_id = payload.get("account_id") or payload.get("account", {}).get("id")
         
         if not user_message or not conversation_id:
-            return {"handled": False, "reason": "missing data"}
+            return {"handled": False, "reason": f"missing data user={user_message} conv={conversation_id}"}
         
         rag_context = ""
         try:
