@@ -9,12 +9,12 @@ WTOKEN = os.environ.get("WINDMILL_TOKEN", "")
 HTOKEN = os.environ.get("HUBSPOT_TOKEN", "")
 PORT = int(os.environ.get("PORT", 5000))
 OWNER_TO_BUSINESS_KEY = {
-    "84958315": "integritasmrv",
-    "33593468": "poweriq",
+    "syncmrv@integritasmrv.com": "integritasmrv",
+    "syncpower@integritasmrv.com": "poweriq",
 }
 def get_business_key(props):
     owner = props.get("hubspot_owner_id", "") or props.get("owner_email", "")
-    return OWNER_TO_BUSINESS_KEY.get(owner or "")
+    return OWNER_TO_BUSINESS_KEY.get(owner.lower() if owner else "")
 class H(BaseHTTPRequestHandler):
   def do_POST(self):
     if self.path != "/webhook/hubspot": self.send_error(404); return
@@ -49,41 +49,14 @@ class H(BaseHTTPRequestHandler):
     self.end_headers()
     self.wfile.write(json.dumps({"status": "ok", "processed": len(res), "results": res}).encode())
   def do_GET(self):
-    if self.path == "/health":
-      self.send_response(200)
-      self.send_header("Content-Type", "application/json")
-      self.end_headers()
-      self.wfile.write(b'{"status":"ok"}')
-    else:
-      self.send_error(404)
+    if self.path == "/health": self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(b'{"status":"ok"}')
+    else: self.send_error(404)
   def log_message(self, fmt, *a): log.info(fmt % a)
 def call_wm(eid, bk, et, lb):
   if not WTOKEN: return {"entity_id": eid, "windmill": "skipped"}
-  payload = json.dumps({
-    "jsonrpc": "2.0",
-    "method": "tools/call",
-    "params": {
-      "name": "runScriptByPath",
-      "arguments": {
-        "path": "u/admin/enrich-trigger",
-        "args": {
-          "entity_id": str(eid),
-          "business_key": bk,
-          "entity_type": et,
-          "label": lb,
-          "source_system": "hubspot-webhook"
-        }
-      }
-    },
-    "id": 1
-  }).encode()
+  payload = json.dumps({"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "runScriptByPath", "arguments": {"path": "u/admin/enrich-trigger", "args": {"entity_id": str(eid), "business_key": bk, "entity_type": et, "label": lb, "source_system": "hubspot-webhook"}}}, "id": 1}).encode()
   try:
-    req = Request(
-      WURL+"/api/mcp/w/admins/mcp",
-      data=payload,
-      headers={"Authorization": "Bearer "+WTOKEN, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-      method="POST"
-    )
+    req = Request(WURL+"/api/mcp/w/admins/mcp", data=payload, headers={"Authorization": "Bearer "+WTOKEN, "Content-Type": "application/json", "Accept": "application/json, text/event-stream"}, method="POST")
     resp = urlopen(req, timeout=60)
     data = resp.read().decode()
     for line in data.split("\\n"):
@@ -93,7 +66,7 @@ def call_wm(eid, bk, et, lb):
           if "result" in result:
             content = result["result"].get("content", [])
             if content and isinstance(content[0], dict):
-              text = content[0].get('text', '').strip(chr(34))
+              text = content[0].get("text", "").strip('"')
               try:
                 wm_result = json.loads(text)
                 euuid = wm_result.get("entity_id", text) if isinstance(wm_result, dict) else text
@@ -115,4 +88,4 @@ def store_hs(ot, hid, eid):
     log.info("Stored %s %s on %s %s", eid, now, ht, hid)
     return True
   except Exception as e: log.error("HS err: %s", e); return False
-HTTPServer(('0.0.0.0', PORT), H).serve_forever()
+HTTPServer(("0.0.0.0", PORT), H).serve_forever()
