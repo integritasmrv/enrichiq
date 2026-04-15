@@ -45,7 +45,6 @@ class IngestWorkflow:
                     result = await workflow.execute_activity(
                         upsert_crm_entity,
                         args=[flat_data, target_crm, table, key_value],
-                        kwargs={},
                         start_to_close_timeout=timedelta(seconds=30),
                     )
                     results[target_name] = result
@@ -65,7 +64,6 @@ class IngestWorkflow:
             result = await workflow.execute_activity(
                 upsert_crm_entity,
                 args=[flat_data, target_crm, "nb_crm_contacts", business_key],
-                kwargs={},
                 start_to_close_timeout=timedelta(seconds=30),
             )
             return {
