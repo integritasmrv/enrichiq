@@ -42,7 +42,7 @@ class IngestWorkflow:
                 non_null = {k: v for k, v in target_data.items() if v is not None}
                 if not non_null:
                     continue
-                target_data["enrichment_status"] = "pending"
+                target_data["enrichment_status"] = "To Be Enriched"
                 flat_data = _flatten(target_data)
                 key_prefix = "webform" if source == "webform" else "hubspot"
                 key_value = f"{key_prefix}-{target_name}-{business_key}" if business_key else None
@@ -59,11 +59,11 @@ class IngestWorkflow:
                 "company_id": results.get("company", {}).get("id"),
                 "target_crm": target_crm,
                 "source": source,
-                "enrichment_status": "pending",
+                "enrichment_status": "To Be Enriched",
             }
 
         else:
-            mapped["enrichment_status"] = "pending"
+            mapped["enrichment_status"] = "To Be Enriched"
             flat_data = _flatten(mapped)
             result = await workflow.execute_activity(
                 upsert_crm_entity,

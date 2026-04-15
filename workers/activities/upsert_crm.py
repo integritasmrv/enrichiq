@@ -95,7 +95,7 @@ async def upsert_crm_entity(
                     extra_data[key] = value
         
         # Add enrichment_status
-        enrichment_status = mapped_data.get("enrichment_status", "pending")
+        enrichment_status = mapped_data.get("enrichment_status", "To Be Enriched")
         set_clauses.append(f"enrichment_status = ${param_idx}")
         col_names.append("enrichment_status")
         col_values.append(enrichment_status)
