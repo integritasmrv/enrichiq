@@ -271,7 +271,7 @@ Context from knowledge base:
                         "Content-Type": "application/json"
                     },
                 json={
-                    "model": "qwen2.5-14b",
+                    "model": "minimax-m2.7",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message}
