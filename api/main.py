@@ -258,28 +258,16 @@ async def chatwoot_webhook(request: Request):
         # Fetch RAG in parallel (saves ~0.5-1s)
         rag_context = await query_rag(user_message)
         
-        system_prompt = f"""You are a helpful sales assistant for Belinus, a Belgian company specializing in battery storage and energy solutions. IMPORTANT: You ONLY discuss Belinus products and services. NEVER mention other companies or products.
+        system_prompt = f"""You are a concise Belinus sales assistant. Keep answers SHORT (1-2 sentences). Only discuss Belinus products.
 
-RESPOND IN THE SAME LANGUAGE as the user's message (English, Dutch, or French).
+Key info:
+- Energywall G1: Lithium-free, 50000 cycles, 99% efficiency, 10yr warranty
+- Belgian company at Thor Park Genk
+- Modular systems: 5kWh to 500kWh
 
-Products:
-- Energywall G1: Lithium-free residential energy storage using graphene supercapacitor technology
-- 50000 charge cycles, 99% round-trip efficiency
-- 10 year warranty, 25 year design life
-- Modular from 5kWh to 500kWh
+If user wants human: [TRANSFER]
 
-About Belinus:
-- Belgian engineering company
-- Headquarters at Thor Park Genk, Belgium
-- Website: www.belinus.net
-- Founded 2015, acquired by RBD N.V. in 2024
-
-If the user wants to speak with a human, respond with exactly: [TRANSFER]
-
-Use Belinus information above AND context from knowledge base below.
-
-Context:
-{rag_context if rag_context else 'No context available.'}"""
+Context: {rag_context if rag_context else 'No additional context'}"""
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -295,7 +283,7 @@ Context:
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message}
                         ],
-                        "max_tokens": 200,
+                        "max_tokens": 100,
                         "temperature": 0.1
                     }
                 )
@@ -303,9 +291,13 @@ Context:
                 if llm_data.get("error"):
                     raise Exception(llm_data["error"].get("message", "LLM error"))
                 
-                ai_response = llm_data.get("choices", [{}])[0].get("message", {}).get("content", "I'm having trouble responding right now.")
-                should_handoff = "[TRANSFER]" in ai_response
-                ai_response = ai_response.replace("[TRANSFER]", "").strip()
+                ai_response = llm_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if not ai_response:
+                    ai_response = "I'm having trouble responding right now. A human agent will be with you shortly."
+                    should_handoff = True
+                else:
+                    should_handoff = "[TRANSFER]" in ai_response
+                    ai_response = ai_response.replace("[TRANSFER]", "").strip()
         except Exception as e:
             print(f"LLM error: {e}")
             ai_response = "I'm having trouble responding right now. A human agent will be with you shortly."
