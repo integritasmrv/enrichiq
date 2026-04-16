@@ -293,14 +293,14 @@ Context: {rag_context if rag_context else 'No additional context'}"""
                 
                 ai_response = llm_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
                 if not ai_response:
-                    ai_response = "I'm having trouble responding right now. A human agent will be with you shortly."
+                    ai_response = "Ik heb even geen antwoord. Een mens zal zo snel mogelijk reageren."
                     should_handoff = True
                 else:
                     should_handoff = "[TRANSFER]" in ai_response
                     ai_response = ai_response.replace("[TRANSFER]", "").strip()
         except Exception as e:
             print(f"LLM error: {e}")
-            ai_response = "I'm having trouble responding right now. A human agent will be with you shortly."
+            ai_response = "Ik heb even geen antwoord. Een mens zal zo snel mogelijk reageren."
             should_handoff = True
         
         # Stop typing indicator
