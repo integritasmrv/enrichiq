@@ -80,6 +80,7 @@ async def webhook_hubspot(payload: HubspotWebhookPayload, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/ingest/webform")
 @app.post("/ingest/webform")
 async def ingest_webform(request: Request):
     try:
