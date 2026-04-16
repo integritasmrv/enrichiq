@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import os
 from temporalio import activity
@@ -23,7 +24,7 @@ async def trigger_enrichiq(entity_type: str, business_key: str, round_num: int, 
 
 
 @activity.defn
-def update_hubspot_contact(hubspot_id: str, enriched_data: dict) -> dict:
+async def update_hubspot_contact(hubspot_id: str, enriched_data: dict) -> dict:
     properties = {}
     ea = enriched_data.get("entity_attributes", {})
     if enriched_data.get("enrichment_score") is not None:
@@ -44,8 +45,8 @@ def update_hubspot_contact(hubspot_id: str, enriched_data: dict) -> dict:
     if not properties:
         return {"updated": False, "reason": "no_properties_to_sync"}
 
-    with httpx.Client() as client:
-        resp = client.patch(
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
             f"{HUBSPOT_BASE}/crm/v3/objects/contacts/{hubspot_id}",
             headers={
                 "Authorization": f"Bearer {PAT}",
@@ -61,7 +62,7 @@ def update_hubspot_contact(hubspot_id: str, enriched_data: dict) -> dict:
 
 
 @activity.defn
-def update_hubspot_company(hubspot_id: str, enriched_data: dict) -> dict:
+async def update_hubspot_company(hubspot_id: str, enriched_data: dict) -> dict:
     properties = {}
     ea = enriched_data.get("entity_attributes", {})
     if enriched_data.get("enrichment_score") is not None:
@@ -75,8 +76,8 @@ def update_hubspot_company(hubspot_id: str, enriched_data: dict) -> dict:
     if not properties:
         return {"updated": False, "reason": "no_properties_to_sync"}
 
-    with httpx.Client() as client:
-        resp = client.patch(
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(
             f"{HUBSPOT_BASE}/crm/v3/objects/companies/{hubspot_id}",
             headers={
                 "Authorization": f"Bearer {PAT}",
