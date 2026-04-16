@@ -1,3 +1,4 @@
+import asyncio
 import yaml
 from pathlib import Path
 from typing import Any
@@ -93,16 +94,20 @@ def _load_mapping_with_extends(mapping_name: str) -> dict:
 
 
 @activity.defn
-def apply_mapping_batch(file_path: str, mapping_name: str) -> list[dict]:
+async def apply_mapping_batch(file_path: str, mapping_name: str) -> list[dict]:
     import polars as pl
-    config = yaml.safe_load(
-        Path(f"/app/mappings/{mapping_name}.yaml").read_text()
-    )
-    df = pl.read_csv(
-        file_path,
-        separator=config.get("separator", ","),
-        encoding=config.get("encoding", "utf-8"),
-        infer_schema_length=0,
-    )
-    rename_map = {f["source"]: f["target"].split(".")[-1] for f in config["fields"]}
-    return df.rename(rename_map).to_dicts()
+
+    def _do_batch():
+        config = yaml.safe_load(
+            Path(f"/app/mappings/{mapping_name}.yaml").read_text()
+        )
+        df = pl.read_csv(
+            file_path,
+            separator=config.get("separator", ","),
+            encoding=config.get("encoding", "utf-8"),
+            infer_schema_length=0,
+        )
+        rename_map = {f["source"]: f["target"].split(".")[-1] for f in config["fields"]}
+        return df.rename(rename_map).to_dicts()
+
+    return await asyncio.to_thread(_do_batch)
