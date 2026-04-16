@@ -6,9 +6,13 @@ from temporalio import workflow
 class WritebackWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
-        from workers.activities.update_crm import update_crm_enrichment
-        from workers.activities.dedup_merge_check import dedup_merge_check
-        from workers.activities.update_hubspot import update_hubspot_contact, update_hubspot_company
+        update_crm_mod = __import__('workers.activities.update_crm', fromlist=['update_crm_enrichment'])
+        update_crm_enrichment = update_crm_mod.update_crm_enrichment
+        dedup_merge_mod = __import__('workers.activities.dedup_merge_check', fromlist=['dedup_merge_check'])
+        dedup_merge_check = dedup_merge_mod.dedup_merge_check
+        hubspot_mod = __import__('workers.activities.update_hubspot', fromlist=['update_hubspot_contact', 'update_hubspot_company'])
+        update_hubspot_contact = hubspot_mod.update_hubspot_contact
+        update_hubspot_company = hubspot_mod.update_hubspot_company
 
         entity_id = payload["entity_id"]
         target_crm = payload.get("target_crm", "integritasmrv")
