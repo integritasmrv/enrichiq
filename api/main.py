@@ -278,7 +278,7 @@ Context: {rag_context if rag_context else 'No additional context'}"""
                         "Content-Type": "application/json"
                     },
                     json={
-                        "model": "minimax-m2.7",
+                        "model": "qwen3:1.7b",
                         "messages": [
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_message}
