@@ -182,7 +182,15 @@ async def get_crm_entity(
         )
         if not row:
             return None
-        return {k: (float(v) if isinstance(v, decimal.Decimal) else v) for k, v in dict(row).items()}
+        result = {}
+        for k, v in dict(row).items():
+            if isinstance(v, decimal.Decimal):
+                result[k] = float(v)
+            elif isinstance(v, datetime):
+                result[k] = v.isoformat()
+            else:
+                result[k] = v
+        return result
     finally:
         await conn.close()
 
