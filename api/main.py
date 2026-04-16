@@ -270,7 +270,7 @@ If user wants human: [TRANSFER]
 Context: {rag_context if rag_context else 'No additional context'}"""
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 llm_resp = await client.post(
                     "http://10.0.4.19:4000/v1/chat/completions",
                     headers={
@@ -289,7 +289,7 @@ Context: {rag_context if rag_context else 'No additional context'}"""
                 )
                 llm_data = llm_resp.json()
                 if llm_data.get("error"):
-                    raise Exception(llm_data["error"].get("message", "LLM error"))
+                    raise Exception(str(llm_data["error"]))
                 
                 ai_response = llm_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
                 if not ai_response:
@@ -299,7 +299,7 @@ Context: {rag_context if rag_context else 'No additional context'}"""
                     should_handoff = "[TRANSFER]" in ai_response
                     ai_response = ai_response.replace("[TRANSFER]", "").strip()
         except Exception as e:
-            print(f"LLM error: {e}")
+            print(f"LLM error: {type(e).__name__}: {e}")
             ai_response = "Ik heb even geen antwoord. Een mens zal zo snel mogelijk reageren."
             should_handoff = True
         
