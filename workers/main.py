@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from temporalio.client import Client
 from temporalio.worker import Worker, UnsandboxedWorkflowRunner
 
@@ -34,6 +35,7 @@ async def main():
             update_hubspot_company,
             trigger_enrichiq,
         ],
+        activity_executor=ThreadPoolExecutor(max_workers=10),
         workflow_runner=UnsandboxedWorkflowRunner(),
     )
 
