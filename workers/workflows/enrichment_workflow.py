@@ -6,8 +6,10 @@ from temporalio import workflow
 class EnrichmentWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
-        from workers.activities.upsert_crm import get_crm_entity
-        from workers.activities.update_hubspot import trigger_enrichiq
+        upsert_crm_mod = __import__('workers.activities.upsert_crm', fromlist=['get_crm_entity'])
+        get_crm_entity = upsert_crm_mod.get_crm_entity
+        hubspot_mod = __import__('workers.activities.update_hubspot', fromlist=['trigger_enrichiq'])
+        trigger_enrichiq = hubspot_mod.trigger_enrichiq
 
         entity_id = payload["entity_id"]
         crm_name = payload["crm_name"]

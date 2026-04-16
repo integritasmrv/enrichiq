@@ -17,8 +17,10 @@ def _flatten(data: dict, prefix: str = "") -> dict:
 class IngestWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
-        from workers.activities.apply_mapping import apply_mapping
-        from workers.activities.upsert_crm import upsert_crm_entity
+        apply_mapping_mod = __import__('workers.activities.apply_mapping', fromlist=['apply_mapping'])
+        apply_mapping = apply_mapping_mod.apply_mapping
+        upsert_crm_mod = __import__('workers.activities.upsert_crm', fromlist=['upsert_crm_entity'])
+        upsert_crm_entity = upsert_crm_mod.upsert_crm_entity
 
         source = payload.get("source", "hubspot")
         mapping_name = payload.get("mapping_name", "hubspot_to_crm")
@@ -42,7 +44,6 @@ class IngestWorkflow:
                 non_null = {k: v for k, v in target_data.items() if v is not None}
                 if not non_null:
                     continue
-                # Only add enrichment_status for contacts and customers, not leads
                 if target_name != "lead":
                     target_data["enrichment_status"] = "To Be Enriched"
                 flat_data = _flatten(target_data)
