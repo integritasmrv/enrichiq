@@ -2,32 +2,62 @@ from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
-import os
 import time
-import asyncpg
+import re
+import hashlib
 import httpx
 from temporalio.client import Client
 
-
-app = FastAPI(title="IntegritasMRV Temporal Bridge")
+app = FastAPI(title="IntegritasMRV Chat + RAG")
 
 TEMPORAL_ADDR = "10.0.4.16:7233"
 TASK_QUEUE = "integritasmrv-ingest"
 
-_db_pool = None
-_temporal_client = None
+REDIS_HOST = "10.0.4.27"
+REDIS_PORT = 6379
+CACHE_TTL = 3600
 
+DIRECT_PATTERNS = [
+    r"^(hi|hello|hey|bonjour|salut|hallo|goededag|goeie|bonsoir)",
+    r"^(merci|thanks|thank you|dank u|danke|bedankt)$",
+    r"^(ok|okay|yes|no|oui|non|ja)$",
+    r"^(goodbye|bye|tot ziens|à bientôt|adieu)$",
+    r"^(how are you|how do you do|ça va)$",
+    r"^what is your name$",
+]
 
-@app.on_event("startup")
-async def startup():
-    global _db_pool, _temporal_client
-    _db_pool = await asyncpg.create_pool(
-        host="10.0.13.2", port=5432, database="integritasmrv_crm",
-        user="integritasmrv_crm_user", password="Int3gr1t@smrv_S3cure_P@ssw0rd_2026",
-        min_size=1, max_size=5,
-    )
-    _temporal_client = await Client.connect(TEMPORAL_ADDR)
+def needs_retrieval(query: str) -> bool:
+    q = query.strip().lower()
+    for pattern in DIRECT_PATTERNS:
+        if re.match(pattern, q):
+            return False
+    return True
 
+def cache_key_fn(query: str, prefix: str = "rag") -> str:
+    return f"{prefix}:{hashlib.sha256(query.encode()).hexdigest()}"
+
+async def get_cached(key: str) -> Optional[str]:
+    try:
+        import redis
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=1, socket_timeout=1)
+        cached = r.get(key)
+        return cached.decode() if cached else None
+    except:
+        pass
+    return None
+
+async def set_cached(key: str, value: str):
+    try:
+        import redis
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=1, socket_timeout=1)
+        r.setex(key, CACHE_TTL, value)
+    except:
+        pass
+
+class HubspotPayload(BaseModel):
+    source: str = "hubspot"
+    data: dict
+    target_crm: Optional[str] = None
 
 class WritebackPayload(BaseModel):
     entity_id: int
@@ -37,129 +67,53 @@ class WritebackPayload(BaseModel):
     enriched_data: dict
     external_ids: dict
 
-
-class EnrichIQWriteback(BaseModel):
+class EnrichIQPayload(BaseModel):
     entity: dict
     trusted_attributes: dict
     meta: dict
 
+class AskRequest(BaseModel):
+    query: str
+    stream: bool = True
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.post("/webhook/hubspot")
 async def webhook_hubspot(request: Request):
     try:
         body = await request.json()
-        print(f"[WEBHOOK] raw body: {str(body)[:800]}", flush=True)
-
-        items = []
-        if isinstance(body, list):
-            items = body
-        elif isinstance(body, dict):
-            if "objects" in body:
-                items = body["objects"]
-            elif "objectId" in body or "properties" in body:
-                items = [body]
-            elif "subscriptionType" in body:
-                items = [body]
-            else:
-                items = [body]
-
-        hubspot_pat = os.environ.get("HUBSPOT_PAT", "")
-        results = []
-
-        async with _db_pool.acquire() as conn:
-            for item in items:
-                sub_type = item.get("subscriptionType", "")
-                object_id = str(item.get("objectId", ""))
-                is_hubspot_event = bool(sub_type)
-
-                if "company" in sub_type:
-                    object_type = "company"
-                elif "contact" in sub_type:
-                    object_type = "contact"
-                elif "deal" in sub_type:
-                    object_type = "deal"
-                else:
-                    object_type = "contact"
-
-                props = item.get("properties", {})
-                property_name = item.get("propertyName", "")
-                is_owner_change = (property_name == "hubspot_owner_id")
-                owner_id_from_event = item.get("propertyValue", "")
-
-                if is_hubspot_event and object_id:
-                    print(f"[WEBHOOK] HubSpot event: {sub_type} id={object_id} prop={property_name}", flush=True)
-                    async with httpx.AsyncClient(timeout=15.0) as hc:
-                        if object_type == "company":
-                            url = f"https://api.hubapi.com/crm/v3/objects/companies/{object_id}?properties=name,phone,website,industry,description,country,city,hubspot_owner_id,hs_object_id,vat_number__c,linkedin_company_page"
-                        else:
-                            url = f"https://api.hubapi.com/crm/v3/objects/contacts/{object_id}?properties=firstname,lastname,email,phone,jobtitle,city,country,website,linkedin_primary_company,hubspot_owner_id,hs_object_id,company"
-                        try:
-                            resp = await hc.get(url, headers={"Authorization": f"Bearer {hubspot_pat}", "Content-Type": "application/json"})
-                            if resp.status_code == 200:
-                                data = resp.json()
-                                fetched_props = data.get("properties", {})
-                                fetched_owner = fetched_props.get("hubspot_owner_id", "")
-                                if is_owner_change:
-                                    props = fetched_props
-                                    owner_id = owner_id_from_event
-                                    print(f"[WEBHOOK] Owner change: API owner={fetched_owner}, routing by event owner={owner_id}", flush=True)
-                                else:
-                                    props = fetched_props
-                                    owner_id = fetched_owner
-                                    print(f"[WEBHOOK] Fetched {object_type} {object_id}: owner={owner_id}", flush=True)
-                            else:
-                                print(f"[WEBHOOK] HubSpot API {resp.status_code}", flush=True)
-                                owner_id = owner_id_from_event or ""
-                        except Exception as e:
-                            print(f"[WEBHOOK] HubSpot API error: {e}", flush=True)
-                            owner_id = owner_id_from_event or ""
-                else:
-                    owner_id = props.get("hubspot_owner_id", "")
-
-                print(f"[WEBHOOK] type={object_type} id={object_id} owner={owner_id}", flush=True)
-
-                route_row = await conn.fetchrow(
-                    "SELECT target_crm FROM crm_sync_routing WHERE hubspot_owner_id = $1 AND active = true LIMIT 1",
-                    str(owner_id),
-                )
-
-                if route_row:
-                    target_crm = route_row["target_crm"].lower()
-                else:
-                    target_crm = "integritasmrv"
-
-                business_key = str(object_id) if object_id else None
-
-                await _temporal_client.start_workflow(
-                    "IngestWorkflow",
-                    {
-                        "source": "hubspot",
-                        "mapping_name": "hubspot_to_crm",
-                        "target_crm": target_crm,
-                        "business_key": business_key,
-                        "data": {"properties": props, "objectType": object_type, "objectId": object_id},
-                    },
-                    id=f"ingest-hubspot-{business_key}",
-                    task_queue=TASK_QUEUE,
-                )
-
-                results.append({"objectId": object_id, "status": "accepted", "target_crm": target_crm})
-
-        return {"status": "ok", "processed": len(results), "results": results}
+        print(f"[WEBHOOK] HubSpot event received", flush=True)
+        
+        client = await Client.connect(TEMPORAL_ADDR)
+        business_key = body.get("objectId") or body.get("properties", {}).get("hs_object_id", "unknown")
+        
+        await client.start_workflow(
+            "IngestWorkflow",
+            {
+                "source": "hubspot",
+                "mapping_name": "hubspot_to_crm",
+                "target_crm": "integritasmrv",
+                "business_key": str(business_key),
+                "data": body,
+            },
+            id=f"ingest-hubspot-{business_key}",
+            task_queue=TASK_QUEUE,
+        )
+        return {"status": "accepted", "workflow_id": f"ingest-hubspot-{business_key}"}
     except Exception as e:
-        print(f"[WEBHOOK] Error: {e}", flush=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        print(f"HubSpot webhook error: {e}")
+        return {"status": "error", "detail": str(e)}
 
 @app.post("/ingest/webform")
 async def ingest_webform(request: Request):
     try:
-        payload = await request.json()
-        email = payload.get("your-email") or payload.get("email", "unknown")
-        first_name = payload.get("first-name", "")
-        last_name = payload.get("last-name", "")
-        wf_id = f"webform-{email}-{int(time.time())}"
+        body = await request.json()
+        email = body.get("your-email") or body.get("email", "unknown")
         client = await Client.connect(TEMPORAL_ADDR)
+        wf_id = f"webform-{email}-{int(time.time())}"
+        
         await client.start_workflow(
             "IngestWorkflow",
             {
@@ -168,18 +122,14 @@ async def ingest_webform(request: Request):
                 "target_crm": "poweriq",
                 "business_key": f"{email}-{int(time.time())}",
                 "data": {
-                    "first_name": first_name,
-                    "last_name": last_name,
+                    "first_name": body.get("first-name", ""),
+                    "last_name": body.get("last-name", ""),
                     "email": email,
-                    "phone": payload.get("phone", ""),
-                    "company": payload.get("company", ""),
-                    "company_website": payload.get("company-website", ""),
-                    "job_title": payload.get("function", ""),
-                    "product_interest": payload.get("product-interest", ""),
-                    "message": payload.get("message", ""),
-                    "source_url": payload.get("source_url", ""),
-                    "form_id": payload.get("form_id", ""),
-                    "form_title": payload.get("form_title", ""),
+                    "phone": body.get("phone", ""),
+                    "company": body.get("company", ""),
+                    "company_website": body.get("company-website", ""),
+                    "job_title": body.get("function", ""),
+                    "message": body.get("message", ""),
                 },
             },
             id=wf_id,
@@ -187,75 +137,193 @@ async def ingest_webform(request: Request):
         )
         return {"status": "accepted", "workflow_id": wf_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Webform error: {e}")
+        return {"status": "error", "detail": str(e)}
 
-
-@app.post("/writeback")
-async def writeback(payload: WritebackPayload, request: Request):
+async def query_rag(query: str) -> str:
     try:
-        wf_id = f"writeback-{payload.entity_id}"
-        client = await Client.connect(TEMPORAL_ADDR)
-        await client.start_workflow(
-            "WritebackWorkflow",
-            {
-                "entity_id": payload.entity_id,
-                "target_crm": payload.target_crm,
-                "source_system": payload.source_system,
-                "entity_type": payload.entity_type,
-                "enriched_data": payload.enriched_data,
-                "external_ids": payload.external_ids,
-            },
-            id=wf_id,
-            task_queue=TASK_QUEUE,
-        )
-        return {"status": "accepted", "workflow_id": wf_id}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            rag_resp = await client.post(
+                "http://intelligence-lightrag:9621/query/data",
+                json={"query": query, "mode": "hybrid"},
+                headers={"LIGHTRAG-WORKSPACE": "poweriq"}
+            )
+            if rag_resp.status_code == 200:
+                rag_data = rag_resp.json()
+                chunks = rag_data.get("data", {}).get("chunks", [])
+                return "\n\n".join([c.get("content", "")[:300] for c in chunks[:3]])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"RAG error: {e}")
+    return ""
 
-
-@app.post("/enrichiq/writeback")
-async def enrichiq_writeback(payload: EnrichIQWriteback, request: Request):
+async def post_typing(account_id: int, conversation_id: int, typing: bool):
     try:
-        meta = payload.meta or {}
-        entity_id = meta.get("entity_id")
-        target_crm = meta.get("target_crm", "integritasmrv")
-        source_system = meta.get("source_system", "hubspot")
-        entity_type = meta.get("entity_type", "contact")
-        external_ids = meta.get("external_ids", {})
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(
+                f"https://chat.belinus.net/api/v1/accounts/{account_id}/conversations/{conversation_id}/toggle_typing",
+                headers={"api_access_token": "3JGewDYGGD78t7s1zB4rbskk"},
+                json={"is_typing": typing}
+            )
+    except:
+        pass
 
-        if not entity_id:
-            raise HTTPException(status_code=400, detail="entity_id required in meta")
+@app.get("/chatwoot/webhook")
+async def chatwoot_webhook_get():
+    return {"status": "ok"}
 
-        enriched_data = {
-            "entity_attributes": payload.entity or {},
-            "enrichment_score": payload.trusted_attributes.get("enrichment_score"),
-            "last_enriched_at": payload.trusted_attributes.get("last_enriched_at"),
-        }
+@app.post("/chatwoot/webhook")
+async def chatwoot_webhook(request: Request):
+    try:
+        payload = await request.json()
+        
+        if payload.get("event") != "message_created":
+            return {"handled": False, "reason": "not message_created"}
+        
+        conversation_id = payload.get("conversation", {}).get("id")
+        account_id = payload.get("account_id") or 1
+        message_data = payload.get("message", {})
+        msg_type = message_data.get("message_type") if message_data else None
+        
+        if not msg_type:
+            messages = payload.get("conversation", {}).get("messages", [])
+            if messages:
+                msg_type = messages[0].get("message_type")
+                message_data = messages[0]
+        
+        if str(msg_type) not in ("0", "incoming", "1"):
+            return {"handled": False}
+        
+        user_message = message_data.get("content", "") if message_data else ""
+        
+        if not user_message or not conversation_id:
+            return {"handled": False}
+        
+        await post_typing(account_id, conversation_id, True)
+        
+        # Query Router - bypass RAG for simple queries
+        if not needs_retrieval(user_message):
+            rag_context = ""
+            print(f"Router: bypass for '{user_message[:30]}'")
+        else:
+            ck = cache_key_fn(user_message)
+            cached = await get_cached(ck)
+            if cached:
+                rag_context = cached
+                print(f"Cache hit for '{user_message[:30]}'")
+            else:
+                rag_context = await query_rag(user_message)
+                await set_cached(ck, rag_context)
+        
+        prompt = f"""Je bent een behulpzame en vriendelijke verkoopassistent voor Belinus, een Belgisch bedrijf dat lithium-vrije batterijopslagsystemen maakt.
 
-        wf_id = f"writeback-enrichiq-{entity_id}"
-        client = await Client.connect(TEMPORAL_ADDR)
-        await client.start_workflow(
-            "WritebackWorkflow",
-            {
-                "entity_id": entity_id,
-                "target_crm": target_crm,
-                "source_system": source_system,
-                "entity_type": entity_type,
-                "enriched_data": enriched_data,
-                "external_ids": external_ids,
-            },
-            id=wf_id,
-            task_queue=TASK_QUEUE,
-        )
-        return {"status": "accepted", "workflow_id": wf_id}
+Producten:
+- Energywall G1: Lithium-vrije thuisbatterij met grafeen supercapacitor technologie
+- 50000 laadcycli, 99% efficiëntie, 10 jaar garantie
+- Modulair: 5kWh tot 500kWh
+
+Belangrijk: Beantwoord KORT en VRIENDELIJK in dezelfde taal als de gebruiker (NL/EN/FR).
+Als iemand een mens wil spreken, schrijf dan: [TRANSFER]
+
+Vraag: {user_message}
+Antwoord:"""
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                llm_resp = await client.post(
+                    "http://10.0.4.19:4000/v1/chat/completions",
+                    headers={
+                        "Authorization": "Bearer sk-litellm-aifabric-secret",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "model": "minimax-m2.7",
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 150,
+                        "temperature": 0.1
+                    }
+                )
+                data = llm_resp.json()
+                if data.get("error"):
+                    raise Exception(str(data["error"]))
+                
+                ai_response = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if not ai_response:
+                    ai_response = "Bedankt voor je bericht! Een van onze teamleden neemt snel contact op."
+                    handoff = True
+                else:
+                    handoff = "[TRANSFER]" in ai_response
+                    ai_response = ai_response.replace("[TRANSFER]", "").strip()
+        except Exception as e:
+            print(f"LLM error: {e}")
+            ai_response = "Bedankt voor je bericht! Een van onze teamleden neemt snel contact op."
+            handoff = True
+        
+        await post_typing(account_id, conversation_id, False)
+        
+        try:
+            hdrs = {"api_access_token": "3JGewDYGGD78t7s1zB4rbskk", "Content-Type": "application/json"}
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                if handoff:
+                    await client.patch(
+                        f"https://chat.belinus.net/api/v1/accounts/{account_id}/conversations/{conversation_id}",
+                        headers=hdrs,
+                        json={"status": "open"}
+                    )
+                await client.post(
+                    f"https://chat.belinus.net/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages",
+                    headers=hdrs,
+                    json={"content": ai_response, "message_type": "outgoing"}
+                )
+                print(f"Sent: {ai_response[:50]}")
+        except Exception as e:
+            print(f"Chatwoot post error: {e}")
+        
+        return {"handled": True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Webhook error: {e}")
+        return {"handled": False}
 
+@app.post("/ask")
+async def ask(body: AskRequest):
+    query = body.query
+    
+    if not needs_retrieval(query):
+        ctx = ""
+        print(f"Router: bypass for '{query[:30]}'")
+    else:
+        ck = cache_key_fn(query)
+        cached = await get_cached(ck)
+        if cached:
+            ctx = cached
+            print(f"Cache hit for '{query[:30]}'")
+        else:
+            ctx = await query_rag(query)
+            await set_cached(ck, ctx)
+    
+    prompt = f"""Context: {ctx if ctx else 'Geen specifieke context'}
+Vraag: {query}
+Antwoord kort en behulpzaam:"""
 
-@app.get("/health")
-async def health():
-    return {"status": "ok", "temporal": TEMPORAL_ADDR, "namespace": "Integritasmrv"}
-
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                "http://10.0.4.19:4000/v1/chat/completions",
+                headers={
+                    "Authorization": "Bearer sk-litellm-aifabric-secret",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "minimax-m2.7",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 150,
+                    "temperature": 0.1
+                }
+            )
+            data = resp.json()
+            answer = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            return {"answer": answer, "context_used": bool(ctx), "cached": False}
+    except Exception as e:
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
