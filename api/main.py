@@ -8,7 +8,7 @@ import hashlib
 import httpx
 import os
 import urllib3
-from hatchet_sdk import Hatchet
+from hatchet_sdk import Hatchet, ClientConfig
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -18,12 +18,13 @@ HATCHET_TOKEN = os.environ.get("HATCHET_CLIENT_TOKEN", "eyJhbGciOiJFUzI1NiIsImtp
 HATCHET_HOST = os.environ.get("HATCHET_CLIENT_HOST_PORT", "10.0.20.1:7070")
 
 try:
-    hatchet_client = Hatchet(
-        namespace="default",
+    config = ClientConfig(
         token=HATCHET_TOKEN,
-        port=HATCHET_HOST
+        namespace="default",
+        engine_url=f"http://{HATCHET_HOST}"
     )
-    print(f"[HATCHET] Client initialized: {hatchet_client.engine().url}")
+    hatchet_client = Hatchet(config=config)
+    print(f"[HATCHET] Client initialized with config")
 except Exception as e:
     print(f"[HATCHET] Failed to initialize: {e}")
     hatchet_client = None
@@ -105,7 +106,7 @@ async def query_rag(query: str) -> str:
         print(f"RAG error: {e}")
     return ""
 
-SYSTEM_PROMPT = """Je spreekt met Belinus, een Belgisch bedrijf gespecialiseerd in thuisbatterijen en zonne-energie oplossingen. 
+SYSTEM_PROMPT = """Je spreekt met Belinus, een Belgisch bedrijf gespecialiseerd in thuisbatterijen en zonne-energie oplossingen.
 Je helpt klanten met informatie over onze producten, installaties en energieoplossingen.
 Beantwoord kort en behulpzaam in het Nederlands of Engels."""
 
@@ -160,14 +161,14 @@ async def ingest_webform(request: Request):
         email = body.get("your-email") or body.get("email", "unknown")
         phone = body.get("phone", "")
         company = body.get("company", "")
-        
+
         wf_id = f"webform-{email}-{int(time.time())}"
-        
+
         message = f"Name: {first_name} {last_name}, Email: {email}, Phone: {phone}, Company: {company}, Message: {body.get('message', '')}"
-        
+
         if hatchet_client:
             try:
-                hatchet_client.event_push("cf7-lead", {"message": message})
+                hatchet_client.event.push("cf7-lead", {"message": message})
                 print(f"[HATCHET] Pushed cf7-lead via SDK: {wf_id}")
                 return {"status": "accepted", "workflow_id": wf_id, "engine": "hatchet"}
             except Exception as he:
@@ -184,18 +185,18 @@ async def webhook_hubspot(request: Request):
     try:
         body = await request.json()
         print(f"[WEBHOOK] HubSpot event received", flush=True)
-        
+
         email = body.get("properties", {}).get("email", {}).get("value", "")
         firstname = body.get("properties", {}).get("firstname", {}).get("value", "")
         lastname = body.get("properties", {}).get("lastname", {}).get("value", "")
         company = body.get("properties", {}).get("company", {}).get("value", "")
         phone = body.get("properties", {}).get("phone", {}).get("value", "")
-        
+
         business_key = body.get("objectId") or "unknown"
-        
+
         if hatchet_client:
             try:
-                hatchet_client.event_push("hubspot-sync", {
+                hatchet_client.event.push("hubspot-sync", {
                     "email": email,
                     "firstname": firstname,
                     "lastname": lastname,
@@ -224,18 +225,18 @@ async def chatwoot_webhook(request: Request):
         msg_type = body.get("message_type")
         content = body.get("content", "")
         sender = body.get("sender", {})
-        
+
         print(f"[CHATWOOT] {msg_type}: {content[:50]}...", flush=True)
-        
+
         if msg_type == "incoming":
             session_id = f"chatwoot-{sender.get('id', 'unknown')}"
-            
+
             cached = await get_cached(cache_key_fn(session_id, "session"))
             if not cached:
                 use_rag = needs_retrieval(content)
                 reply = await chat_with_llm(content, use_rag)
                 await set_cached(cache_key_fn(session_id, "session"), reply)
-                
+
                 return {
                     "message": {
                         "content": reply,
@@ -244,7 +245,7 @@ async def chatwoot_webhook(request: Request):
                 }
             else:
                 return {"status": "cached"}
-        
+
         return {"status": "ignored"}
     except Exception as e:
         print(f"Chatwoot error: {e}")
@@ -254,17 +255,17 @@ async def chatwoot_webhook(request: Request):
 async def ask(request: AskRequest, meta: Meta):
     query = request.query
     session_id = meta.session_id
-    
+
     if not needs_retrieval(query):
         reply = await query_ollama(query, SYSTEM_PROMPT)
         return {"answer": reply, "session_id": session_id}
-    
+
     cached = await get_cached(cache_key_fn(query))
     if cached:
         print(f"[CACHE] Hit for: {query[:30]}...")
         return {"answer": cached, "session_id": session_id, "cached": True}
-    
+
     reply = await chat_with_llm(query)
     await set_cached(cache_key_fn(query), reply)
-    
+
     return {"answer": reply, "session_id": session_id}
