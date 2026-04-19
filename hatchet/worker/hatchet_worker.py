@@ -60,63 +60,27 @@ async def claim_company(company_id: str) -> dict | None:
 async def write_crm(company_id: str, enriched: dict):
     conn = await get_crm_conn()
     try:
-        sets = []
-        values = []
-        idx = 1
-        field_map = {
-            "website": "website",
-            "domain": "domain",
-            "linkedin_url": "linkedin_url",
-            "industry": "industry",
-            "country": "country",
-            "company_logo_url": "company_logo_url",
-            "description": "description",
-            "twitter_handle": "twitter_handle",
-            "founded_year": "founded_year",
-            "sic_code": "sic_code",
-            "company_email": "company_email",
-        }
-        for col, key in field_map.items():
-            val = enriched.get(key)
-            if val is not None:
-                idx += 1
-                sets.append(f"{col} = ${idx}")
-                values.append(val)
-
-        idx += 1
-        sets.append(f"enrichment_status = ${idx}")
-        values.append(enriched.get("status", "Enriched Partial"))
-
-        idx += 1
-        sets.append(f"enrichment_score = ${idx}")
-        values.append(enriched.get("score", 0))
-
-        idx += 1
-        sets.append(f"enrichment_notes = ${idx}")
-        values.append(enriched.get("notes", ""))
-
-        idx += 1
-        sets.append(f"enrichment_source = ${idx}::jsonb")
-        values.append(json.dumps(enriched.get("sources", [])))
-
-        idx += 1
-        sets.append(f"last_enriched_at = NOW()")
-
-        idx += 1
-        sets.append(f"enrichment_locked_until = ${idx}")
-        values.append(None)
-
-        idx += 1
-        sets.append(f"enrichment_worker_id = ${idx}")
-        values.append(None)
-
-        idx += 1
-        sets.append(f"last_enrichment_run_id = ${idx}")
-        values.append(enriched.get("run_id"))
-
-        values.append(int(company_id))
-        where_idx = idx + 1
-        sql = f"UPDATE nb_crm_customers SET {', '.join(sets)} WHERE id = ${where_idx}"
+        sets = ["website = $1", "domain = $2", "linkedin_url = $3",
+                "industry = $4", "country = $5", "company_logo_url = $6",
+                "description = $7", "twitter_handle = $8", "founded_year = $9",
+                "sic_code = $10", "company_email = $11",
+                "enrichment_status = $12", "enrichment_score = $13",
+                "enrichment_notes = $14", "enrichment_source = $15::jsonb",
+                "last_enriched_at = NOW()", "enrichment_locked_until = NULL",
+                "enrichment_worker_id = NULL", "last_enrichment_run_id = $16"]
+        values = [
+            enriched.get("website"), enriched.get("domain"),
+            enriched.get("linkedin_url"), enriched.get("industry"),
+            enriched.get("country"), enriched.get("company_logo_url"),
+            enriched.get("description"), enriched.get("twitter_handle"),
+            enriched.get("founded_year"), enriched.get("sic_code"),
+            enriched.get("company_email"),
+            enriched.get("status", "Enriched Partial"),
+            enriched.get("score", 0), enriched.get("notes", ""),
+            json.dumps(enriched.get("sources", [])),
+            enriched.get("run_id"), int(company_id),
+        ]
+        sql = f"UPDATE nb_crm_customers SET {', '.join(sets)} WHERE id = $17"
         await conn.execute(sql, *values)
         log.info("Wrote enriched data to CRM: id=%s", company_id)
     finally:
