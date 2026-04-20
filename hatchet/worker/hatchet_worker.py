@@ -66,7 +66,7 @@ async def insert_cf7_lead_to_poweriq(first_name: str, last_name: str, email: str
         row = await conn.fetchrow(
             """
             INSERT INTO nb_crm_leads (name, company, email, phone, source, status, description, extra)
-            VALUES ($1, $2, $3, $4, 'CF7 Webform', 'new', $5, $6::jsonb)
+            VALUES ($1, $2, $3, $4, 'website', 'new', $5, $6::jsonb)
             RETURNING id
             """,
             f"{first_name} {last_name}".strip(),
