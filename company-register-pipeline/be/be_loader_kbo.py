@@ -1,8 +1,13 @@
 """
 BE KBO Pipeline Orchestrator - Chunked batch loader
 
-Loads BE KBO data in chunks of 100 records per batch for reliability.
+Loads BE KBO data in chunks of 200 records per batch for reliability.
 Sequential processing: one extract at a time, merge immediately after load.
+
+Pipeline state management:
+- If load completes successfully but merge fails, versioned DB is kept for retry
+- If load fails, versioned DB is dropped and load will restart
+- Merge can be retried independently if versioned DB exists
 """
 
 import os
@@ -10,10 +15,9 @@ import sys
 import csv
 import logging
 import argparse
-import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -28,13 +32,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def map_column_name(csv_name: str) -> str:
-    """Map CSV column name to database column name (lowercase)."""
-    return csv_name.strip().strip('"').lower()
-
-
 class KBOPipeline:
-    """BE KBO Pipeline Orchestrator."""
+    """BE KBO Pipeline Orchestrator with state management."""
 
     def __init__(self, db_config: DBConfig = None, monitor_config: MonitorDBConfig = None):
         self.db = Database(db_config)
@@ -48,8 +47,6 @@ class KBOPipeline:
         logger.info("BE KBO Pipeline Orchestrator starting")
         logger.info("=" * 60)
 
-        self.run_id = None
-
         self._ensure_master_exists()
 
         new_extracts = self._find_unprocessed_extracts()
@@ -60,11 +57,11 @@ class KBOPipeline:
 
         logger.info(f"Found {len(new_extracts)} new extract(s) to process")
 
-        if new_extracts:
+        for extract_folder in new_extracts:
             try:
-                self._process_extract(new_extracts[0])
+                self._process_extract_with_retry(extract_folder)
             except Exception as e:
-                logger.error(f"Failed to process {new_extracts[0]}: {e}")
+                logger.error(f"Failed to process {extract_folder}: {e}")
                 import traceback
                 traceback.print_exc()
 
@@ -72,86 +69,11 @@ class KBOPipeline:
         logger.info("Pipeline execution completed")
         logger.info("=" * 60)
 
-    def _ensure_master_exists(self):
-        """Ensure BE KBO MASTER exists. Create if it doesn't."""
-        logger.info("Checking if BE KBO MASTER exists...")
-        
-        if self.db.database_exists(config.MASTER_DB):
-            logger.info(f"BE KBO MASTER already exists")
-        else:
-            logger.info(f"Creating BE KBO MASTER...")
-            self.db.create_database(config.MASTER_DB)
-            
-            master_db = Database(DBConfig(
-                host=self.db.config.host,
-                port=self.db.config.port,
-                database=config.MASTER_DB,
-                user=self.db.config.user,
-                password=self.db.config.password
-            ))
-            master_db.run_sql_file(
-                os.path.join(os.path.dirname(__file__), '..', 'sql', '01_create_be_master_db.sql')
-            )
-            logger.info(f"BE KBO MASTER created successfully")
-
-    def _find_unprocessed_extracts(self) -> List[Path]:
-        """Find extracts that haven't been merged yet."""
-        if not os.path.exists(config.DATA_ROOT):
-            logger.warning(f"Data root not found: {config.DATA_ROOT}")
-            return []
-
-        extract_folders = []
-        for item in os.listdir(config.DATA_ROOT):
-            if item.startswith(config.EXTRACT_PREFIX):
-                extract_path = os.path.join(config.DATA_ROOT, item)
-                if os.path.isdir(extract_path):
-                    extract_folders.append(extract_path)
-
-        extract_folders.sort(key=lambda x: self._extract_number_from_folder(x))
-
-        master_db = Database(DBConfig(
-            host=self.db.config.host,
-            port=self.db.config.port,
-            database=config.MASTER_DB,
-            user=self.db.config.user,
-            password=self.db.config.password
-        ))
-        
-        unprocessed = []
-        for folder in extract_folders:
-            extract_num = self._extract_number_from_folder(folder)
-            result = master_db.fetch_one(
-                "SELECT 1 FROM ref.extract_version WHERE version_id = %s AND merge_status = 'DONE'",
-                (str(extract_num),)
-            )
-            if not result:
-                unprocessed.append(folder)
-
-        return unprocessed
-
-    def _extract_number_from_folder(self, folder_path: str) -> int:
-        """Extract the sequence number from folder name."""
-        folder_name = os.path.basename(folder_path)
-        try:
-            return int(folder_name.replace('ExtractNumber ', ''))
-        except:
-            return 0
-
-    def _read_meta(self, extract_folder: str) -> Dict:
-        """Read meta.csv to get extract metadata."""
-        meta_path = os.path.join(extract_folder, 'meta.csv')
-        meta = {}
-        
-        if os.path.exists(meta_path):
-            with open(meta_path, 'r', encoding=config.CSV_ENCODING, errors='replace') as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if len(row) >= 2:
-                        meta[row[0].strip()] = row[1].strip()
-        return meta
-
-    def _process_extract(self, extract_folder: str):
-        """Process a single extract: load CSVs then merge to master."""
+    def _process_extract_with_retry(self, extract_folder: str):
+        """
+        Process a single extract with load+merge as atomic operation.
+        If merge fails after successful load, can retry merge without reloading.
+        """
         folder_name = os.path.basename(extract_folder)
         extract_num = self._extract_number_from_folder(extract_folder)
         versioned_db_name = f"BE KBO {extract_num}"
@@ -174,80 +96,120 @@ class KBOPipeline:
         self.monitor.start_run(extract_run_id)
         self.current_run_id = extract_run_id
 
+        versioned_db = None
+        load_success = False
+        
+        # Check if versioned DB already exists (from previous failed attempt)
         if self.db.database_exists(versioned_db_name):
-            logger.info(f"Dropping existing database: {versioned_db_name}")
-            self.db.drop_database(versioned_db_name)
-        
-        logger.info(f"Creating versioned database: {versioned_db_name}")
-        self.db.create_database(versioned_db_name)
-        
-        versioned_db = Database(DBConfig(
-            host=self.db.config.host,
-            port=self.db.config.port,
-            database=versioned_db_name,
-            user=self.db.config.user,
-            password=self.db.config.password
-        ))
-        versioned_db.run_sql_file(
-            os.path.join(os.path.dirname(__file__), '..', 'sql', '02_create_versioned_db.sql')
-        )
-
-        self.load_results = {}
-        all_file_totals = {}
-        grand_total = 0
-        
-        for csv_file in config.KBO_FILES:
-            csv_path = os.path.join(extract_folder, csv_file)
-            if os.path.exists(csv_path):
-                total_rows = self._count_csv_rows(csv_path)
-                all_file_totals[csv_file] = total_rows
-                grand_total += total_rows
-            else:
-                all_file_totals[csv_file] = 0
-        
-        item_ids = {}
-        for csv_file in config.KBO_FILES:
-            csv_path = os.path.join(extract_folder, csv_file)
-            if os.path.exists(csv_path):
-                item_id = self.monitor.add_item(
-                    run_id=self.current_run_id,
-                    item_type='file',
-                    source_path=csv_path,
-                    table_name=config.CSV_TO_TABLE.get(csv_file, f"kbo.{csv_file.replace('.csv', '')}"),
-                    total_items=all_file_totals[csv_file]
-                )
-                item_ids[csv_file] = item_id
-        
-        processed_files = 0
-        processed_items = 0
-        
-        for csv_file in config.KBO_FILES:
-            csv_path = os.path.join(extract_folder, csv_file)
-            item_id = item_ids.get(csv_file)
+            # Check if it has data (meaning load completed but merge failed)
+            versioned_db = Database(DBConfig(
+                host=self.db.config.host,
+                port=self.db.config.port,
+                database=versioned_db_name,
+                user=self.db.config.user,
+                password=self.db.config.password
+            ))
             
-            if os.path.exists(csv_path) and item_id:
-                self.monitor.start_item(item_id)
-                self.current_item_id = item_id
-                
-                rows_loaded = self._load_csv_chunked(csv_path, csv_file, versioned_db, item_id)
-                processed_items += rows_loaded
-                
-                if rows_loaded == 0 and all_file_totals[csv_file] > 0:
-                    logger.error(f"    FAILED to load any rows from {csv_file} (expected {all_file_totals[csv_file]} rows)")
-                    self.monitor.complete_item(item_id, "failed")
-                    raise RuntimeError(f"Failed to load {csv_file}: inserted 0 rows from {all_file_totals[csv_file]} expected")
-                
-                self.load_results[csv_file] = rows_loaded
-                processed_files += 1
-                self.monitor.complete_item(item_id)
-                self.monitor.update_progress(self.current_run_id, processed_items=processed_items, processed_files=processed_files)
-            else:
-                logger.warning(f"CSV file not found: {csv_path}")
-                self.load_results[csv_file] = 0
+            # Try to check if tables have data
+            try:
+                result = versioned_db.fetch_one("SELECT COUNT(*) FROM kbo.enterprise")
+                if result and result[0] > 0:
+                    logger.info(f"Found existing versioned DB with data, skipping load")
+                    load_success = True
+                else:
+                    logger.info(f"Found empty versioned DB, will reload")
+                    versioned_db = None
+                    self.db.drop_database(versioned_db_name)
+            except:
+                logger.info(f"Versioned DB invalid, will reload")
+                versioned_db = None
+                self.db.drop_database(versioned_db_name)
+        
+        # Step 1: Load CSVs if not already loaded
+        if not load_success:
+            # Drop existing DB if any
+            if self.db.database_exists(versioned_db_name):
+                logger.info(f"Dropping existing database: {versioned_db_name}")
+                self.db.drop_database(versioned_db_name)
+            
+            logger.info(f"Creating versioned database: {versioned_db_name}")
+            self.db.create_database(versioned_db_name)
+            
+            versioned_db = Database(DBConfig(
+                host=self.db.config.host,
+                port=self.db.config.port,
+                database=versioned_db_name,
+                user=self.db.config.user,
+                password=self.db.config.password
+            ))
+            versioned_db.run_sql_file(
+                os.path.join(os.path.dirname(__file__), '..', 'sql', '02_create_versioned_db.sql')
+            )
 
+            self.load_results = {}
+            all_file_totals = {}
+            grand_total = 0
+            
+            for csv_file in config.KBO_FILES:
+                csv_path = os.path.join(extract_folder, csv_file)
+                if os.path.exists(csv_path):
+                    total_rows = self._count_csv_rows(csv_path)
+                    all_file_totals[csv_file] = total_rows
+                    grand_total += total_rows
+                else:
+                    all_file_totals[csv_file] = 0
+            
+            item_ids = {}
+            for csv_file in config.KBO_FILES:
+                csv_path = os.path.join(extract_folder, csv_file)
+                if os.path.exists(csv_path):
+                    item_id = self.monitor.add_item(
+                        run_id=self.current_run_id,
+                        item_type='file',
+                        source_path=csv_path,
+                        table_name=config.CSV_TO_TABLE.get(csv_file, f"kbo.{csv_file.replace('.csv', '')}"),
+                        total_items=all_file_totals[csv_file]
+                    )
+                    item_ids[csv_file] = item_id
+            
+            processed_files = 0
+            processed_items = 0
+            
+            for csv_file in config.KBO_FILES:
+                csv_path = os.path.join(extract_folder, csv_file)
+                item_id = item_ids.get(csv_file)
+                
+                if os.path.exists(csv_path) and item_id:
+                    self.monitor.start_item(item_id)
+                    self.current_item_id = item_id
+                    
+                    rows_loaded = self._load_csv_chunked(csv_path, csv_file, versioned_db, item_id)
+                    processed_items += rows_loaded
+                    
+                    if rows_loaded == 0 and all_file_totals[csv_file] > 0:
+                        logger.error(f"    FAILED to load any rows from {csv_file} (expected {all_file_totals[csv_file]} rows)")
+                        self.monitor.complete_item(item_id, "failed")
+                        raise RuntimeError(f"Failed to load {csv_file}: inserted 0 rows from {all_file_totals[csv_file]} expected")
+                    
+                    self.load_results[csv_file] = rows_loaded
+                    processed_files += 1
+                    self.monitor.complete_item(item_id)
+                    self.monitor.update_progress(self.current_run_id, processed_items=processed_items, processed_files=processed_files)
+                else:
+                    logger.warning(f"CSV file not found: {csv_path}")
+                    self.load_results[csv_file] = 0
+            
+            load_success = True
+            logger.info("Load completed successfully")
+        
+        # Step 2: Merge to MASTER (can retry independently if merge fails)
         logger.info("Merging to BE KBO MASTER...")
-        self._merge_to_master(versioned_db, str(extract_num), snapshot_date, extract_folder)
-
+        merge_success = self._merge_to_master(versioned_db, str(extract_num), snapshot_date, extract_folder)
+        
+        if not merge_success:
+            logger.error("Merge failed - versioned DB kept for retry. Run merge again manually or restart pipeline.")
+            raise RuntimeError("Merge failed")
+        
         logger.info(f"Completed processing {folder_name}")
 
     def _count_csv_rows(self, csv_path: str) -> int:
@@ -369,8 +331,12 @@ class KBOPipeline:
             raise RuntimeError(f"Failed to load {csv_file}: {e}")
 
     def _merge_to_master(self, versioned_db: Database, extract_num: str, 
-                        snapshot_date: str, source_folder: str):
-        """Merge versioned database to master using Python-based incremental merge."""
+                        snapshot_date: str, source_folder: str) -> bool:
+        """
+        Merge versioned database to master using Python-based incremental merge.
+        Returns True on success, False on failure.
+        On failure, versioned DB is kept so merge can be retried without reload.
+        """
         logger.info("Merging to BE KBO MASTER...")
         
         sys.path.insert(0, os.path.dirname(__file__))
@@ -399,10 +365,90 @@ class KBOPipeline:
                            f"{result.get('records_queued', 0):,} queued")
             else:
                 logger.info("  Merge completed")
+            return True
         except Exception as e:
             logger.error(f"  Merge failed: {e}")
             import traceback
             traceback.print_exc()
+            return False
+
+    def _ensure_master_exists(self):
+        """Ensure BE KBO MASTER exists. Create if it doesn't."""
+        logger.info("Checking if BE KBO MASTER exists...")
+        
+        if self.db.database_exists(config.MASTER_DB):
+            logger.info(f"BE KBO MASTER already exists")
+        else:
+            logger.info(f"Creating BE KBO MASTER...")
+            self.db.create_database(config.MASTER_DB)
+            
+            master_db = Database(DBConfig(
+                host=self.db.config.host,
+                port=self.db.config.port,
+                database=config.MASTER_DB,
+                user=self.db.config.user,
+                password=self.db.config.password
+            ))
+            master_db.run_sql_file(
+                os.path.join(os.path.dirname(__file__), '..', 'sql', '01_create_be_master_db.sql')
+            )
+            logger.info(f"BE KBO MASTER created successfully")
+
+    def _find_unprocessed_extracts(self) -> List[Path]:
+        """Find extracts that haven't been merged yet."""
+        if not os.path.exists(config.DATA_ROOT):
+            logger.warning(f"Data root not found: {config.DATA_ROOT}")
+            return []
+
+        extract_folders = []
+        for item in os.listdir(config.DATA_ROOT):
+            if item.startswith(config.EXTRACT_PREFIX):
+                extract_path = os.path.join(config.DATA_ROOT, item)
+                if os.path.isdir(extract_path):
+                    extract_folders.append(extract_path)
+
+        extract_folders.sort(key=lambda x: self._extract_number_from_folder(x))
+
+        master_db = Database(DBConfig(
+            host=self.db.config.host,
+            port=self.db.config.port,
+            database=config.MASTER_DB,
+            user=self.db.config.user,
+            password=self.db.config.password
+        ))
+        
+        unprocessed = []
+        for folder in extract_folders:
+            extract_num = self._extract_number_from_folder(folder)
+            result = master_db.fetch_one(
+                "SELECT 1 FROM ref.extract_version WHERE version_id = %s AND merge_status = 'DONE'",
+                (str(extract_num),)
+            )
+            if not result:
+                unprocessed.append(folder)
+
+        return unprocessed
+
+    def _extract_number_from_folder(self, folder_path: str) -> int:
+        """Extract the sequence number from folder name."""
+        folder_name = os.path.basename(folder_path)
+        try:
+            return int(folder_name.replace('ExtractNumber ', ''))
+        except:
+            return 0
+
+    def _read_meta(self, extract_folder: str) -> Dict:
+        """Read meta.csv to get extract metadata."""
+        meta_path = os.path.join(extract_folder, 'meta.csv')
+        meta = {}
+        
+        if os.path.exists(meta_path):
+            with open(meta_path, 'r', encoding=config.CSV_ENCODING, errors='replace') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) >= 2:
+                        meta[row[0].strip()] = row[1].strip()
+        return meta
 
 
 def main():
