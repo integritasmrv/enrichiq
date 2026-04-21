@@ -40,8 +40,8 @@ POWERIQ_DB = os.environ.get("POWERIQ_DB_NAME", "poweriq_crm")
 
 async def get_crm_conn():
     return await asyncpg.connect(
-        host="crm-integritasmrv-db",
-        port=5432,
+        host="127.0.0.1",
+        port=15432,
         user="integritasmrv_crm_user",
         password="oYxxPKRfAHAD263VSDcKmljKY0vInx2QTl6PooKoqmmiDops",
         database="integritasmrv_crm",
@@ -313,7 +313,7 @@ async def searxng_enrich_company(company_name: str, country: str | None = None, 
     results = await searxng_search(query)
     
     enriched = {
-        "status": "enriched",
+        "status": "Enriched Partial",
         "score": min(100, len(results) * 20),
         "notes": "",
         "sources": [r.get("url", "") for r in results if r.get("url")],
@@ -380,17 +380,31 @@ cf7_wf = hatchet.workflow(name="cf7-to-crm-workflow", input_validator=LeadInput,
 
 @cf7_wf.task(name="process-lead")
 async def process_lead(input: LeadInput, ctx: Context) -> LeadOutput:
-    log.info("CF7 lead event received: %s", input.message)
+    log.info("CF7 lead: %s", input.message)
     
     parsed = parse_cf7_message(input.message)
-    log.info("CF7 lead parsed: name=%s %s, email=%s, company=%s",
+    log.info("Parsed CF7 lead: name=%s %s, email=%s, company=%s",
              parsed["first_name"], parsed["last_name"], parsed["email"], parsed["company"])
     
-    # Note: PowerIQ insert is handled by the API (integritasmrv-api) directly.
-    # This worker just acknowledges the event for workflow tracking.
+    if not parsed["email"] or "@" not in parsed["email"]:
+        log.warning("Invalid email, skipping CRM insert: %s", parsed["email"])
+        return LeadOutput(result=f"Skipped: invalid email", lead_id=None)
     
-    log.info("CF7 lead event acknowledged - API handles PowerIQ insert")
-    return LeadOutput(result=f"CF7 lead acknowledged: {parsed['email']}", lead_id=None)
+    lead_id = await insert_cf7_lead_to_poweriq(
+        first_name=parsed["first_name"],
+        last_name=parsed["last_name"],
+        email=parsed["email"],
+        phone=parsed["phone"],
+        company=parsed["company"],
+        message=parsed["message"],
+    )
+    
+    if lead_id:
+        log.info("Inserted CF7 lead into PowerIQ CRM: id=%d", lead_id)
+        return LeadOutput(result=f"Inserted: lead_id={lead_id}", lead_id=lead_id)
+    else:
+        log.error("Failed to insert CF7 lead into PowerIQ CRM")
+        return LeadOutput(result="Failed to insert", lead_id=None)
 
 
 class HubSpotInput(BaseModel):
@@ -484,7 +498,7 @@ async def enrich_contact(input: ContactEnrichInput, ctx: Context) -> ContactEnri
     results = await searxng_search(query)
     
     enriched = {
-        "status": "enriched",
+        "status": "Enriched Partial",
         "score": min(100, len(results) * 20),
         "notes": f"Found {len(results)} results",
         "sources": [r.get("url", "") for r in results if r.get("url")],
