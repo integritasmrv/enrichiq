@@ -1,18 +1,18 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from typing import Optional, Tuple
+from typing import Optional
 import asyncio
 import time
 import re
 import hashlib
 import httpx
 import os
-#import urllib3
-#urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+import asyncpg
 
 app = FastAPI(title="IntegritasMRV Chat + RAG")
 
-HATCHET_TOKEN = os.environ.get("HATCHET_CLIENT_TOKEN", "eyJhbGciOiJFUzI1NiIsImtpZCI6IkRFOWxydyJ9.eyJhdWQiOiJodHRwOi8vbG9jYWxob3N0OjgwODAiLCJleHAiOjE3ODQzMTI1MzQsImdycGNfYnJvYWRjYXN0X2FkZHJlc3MiOiJoYXRjaGV0LWVuZ2luZTo3MDcwIiwiaWF0IjoxNzc2NTM2NTM0LCJpc3MiOiJodHRwOi8vbG9jYWxob3N0OjgwODAiLCJzZXJ2ZXJfdXJsIjoiaHR0cDovL2xvY2FsaG9zdDo4MDgwIiwic3ViIjoiNzA3ZDA4NTUtODBhYi00ZTFmLWExNTYtZjFjNDU0NmNiZjUyIiwidG9rZW5faWQiOiI1Y2NhNTU1MS03ODYwLTQxYTQtODMzZC1lNTg0NTQ3YTM4MjAifQ.V6kV3M5OZB5xHhjtrIOCEs_rif78GhW5_yno6q9qnJgO4dCRnqY8UAgERVert3XYmgv5sf_g7_hhq_xjoDpisw")
+HS_PAT = os.environ.get("HUBSPOT_API_TOKEN", "")
+HATCHET_TOKEN = os.environ.get("HATCHET_CLIENT_TOKEN", "")
 HATCHET_HOST = os.environ.get("HATCHET_CLIENT_HOST_PORT", "10.0.20.1:7070")
 HATCHET_REST_URL = f"http://{HATCHET_HOST}/api/v1/events"
 print(f"[HATCHET] Using HTTP REST - {HATCHET_REST_URL}")
@@ -35,6 +35,22 @@ DIRECT_PATTERNS = [
     r"^(see you|later|à plus)$",
 ]
 
+CRM_HOSTS = {
+    "integritasmrv": {
+        "host": "10.0.13.2", "port": 5432,
+        "user": "integritasmrv_crm_user",
+        "password": "oYxxPKRfAHAD263VSDcKmljKY0vInx2QTl6PooKoqmmiDops",
+        "database": "integritasmrv_crm",
+    },
+    "poweriq": {
+        "host": "10.0.14.2", "port": 5432,
+        "user": "poweriq_crm_user",
+        "password": "P0w3r1Q_CRM_S3cur3_P@ss_2026",
+        "database": "poweriq_crm",
+    },
+}
+
+
 def needs_retrieval(query: str) -> bool:
     q = query.strip().lower()
     for pattern in DIRECT_PATTERNS:
@@ -42,8 +58,10 @@ def needs_retrieval(query: str) -> bool:
             return False
     return True
 
+
 def cache_key_fn(query: str, prefix: str = "rag") -> str:
     return f"{prefix}:{hashlib.sha256(query.encode()).hexdigest()}"
+
 
 async def get_cached(key: str) -> Optional[str]:
     try:
@@ -54,6 +72,7 @@ async def get_cached(key: str) -> Optional[str]:
     except:
         return None
 
+
 async def set_cached(key: str, value: str) -> None:
     try:
         import redis
@@ -61,6 +80,7 @@ async def set_cached(key: str, value: str) -> None:
         r.setex(key, CACHE_TTL, value)
     except:
         pass
+
 
 async def query_ollama(prompt: str, system: str = "") -> str:
     try:
@@ -79,6 +99,7 @@ async def query_ollama(prompt: str, system: str = "") -> str:
         print(f"[OLLAMA] Error: {e}")
     return "Sorry, I couldn't generate a response."
 
+
 async def query_rag(query: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -94,15 +115,18 @@ async def query_rag(query: str) -> str:
         print(f"RAG error: {e}")
     return ""
 
+
 SYSTEM_PROMPT = """Je spreekt met Belinus, een Belgisch bedrijf gespecialiseerd in thuisbatterijen en zonne-energie oplossingen.
 Je helpt klanten met informatie over onze producten, installaties en energieoplossingen.
 Beantwoord kort en behulpzaam in het Nederlands of Engels."""
 
 BELINUS_KEYWORDS = ["batterij", "thuisbatterij", "zonne", "zonnepanelen", "energie", "solar", "opslag", "laadpaal", "warmtepomp", "groene energie", "grid", "back-up", "ev", "electric", "vehicle", "charging", "wallbox", "photovoltaic", "pv", "inverter", "omvormer", "installatie", "monteur", "offerte", "prijs", "kost", "subsidie", "premie", "mvg", "veolia", "fluvius"]
 
+
 def is_belinus_question(query: str) -> bool:
     q = query.lower()
     return any(kw in q for kw in BELINUS_KEYWORDS)
+
 
 async def chat_with_llm(message: str, use_rag: bool = True) -> str:
     if is_belinus_question(message) and use_rag:
@@ -117,6 +141,46 @@ Antwoord als Belinus medewerker in het Nederlands of Engels:"""
             return await query_ollama(prompt, SYSTEM_PROMPT)
     return await query_ollama(message, SYSTEM_PROMPT)
 
+
+async def get_hubspot_owner_email(owner_id: str) -> str:
+    if not owner_id or not HS_PAT:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(
+                f"https://api.hubapi.com/crm/v3/owners/{owner_id}",
+                headers={"Authorization": f"Bearer {HS_PAT}", "Content-Type": "application/json"},
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return data.get("email", "")
+    except Exception as e:
+        print(f"[HUBSPOT] Owner lookup failed for {owner_id}: {e}")
+    return ""
+
+
+async def resolve_owner_email(evt: dict) -> str:
+    props = evt.get("properties", {})
+    direct_email = props.get("hubspot_owner_email", {}).get("value", "")
+    if direct_email:
+        return direct_email
+    owner_id = (
+        evt.get("subscription", {}).get("ownerId") or
+        props.get("hubspot_owner_id", {}).get("value") or
+        ""
+    )
+    if owner_id:
+        return await get_hubspot_owner_email(owner_id)
+    return ""
+
+
+async def get_crm_for_owner(owner_email: str) -> tuple[str, dict]:
+    email_lower = str(owner_email).lower()
+    if "syncpower@" in email_lower:
+        return "poweriq", CRM_HOSTS["poweriq"]
+    return "integritasmrv", CRM_HOSTS["integritasmrv"]
+
+
 class WebformRequest(BaseModel):
     first_name: str
     last_name: str
@@ -125,20 +189,25 @@ class WebformRequest(BaseModel):
     company: str = ""
     message: str = ""
 
+
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
 
+
 class Meta(BaseModel):
     session_id: str
+
 
 class AskRequest(BaseModel):
     query: str
     stream: bool = True
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
 
 @app.post("/ingest/webform")
 async def ingest_webform(request: Request):
@@ -153,6 +222,9 @@ async def ingest_webform(request: Request):
         wf_id = f"webform-{email}-{int(time.time())}"
 
         message = f"Name: {first_name} {last_name}, Email: {email}, Phone: {phone}, Company: {company}, Message: {body.get('message', '')}"
+
+        if not HATCHET_TOKEN:
+            return {"status": "error", "detail": "HATCHET_CLIENT_TOKEN not set"}
 
         try:
             async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
@@ -174,8 +246,6 @@ async def ingest_webform(request: Request):
         print(f"Webform error: {e}")
         return {"status": "error", "detail": str(e)[:100]}
 
-import asyncpg
-import asyncpg
 
 @app.post("/webhook/hubspot")
 async def webhook_hubspot(request: Request):
@@ -183,60 +253,27 @@ async def webhook_hubspot(request: Request):
         body = await request.json()
         events = body if isinstance(body, list) else [body]
         print(f"[WEBHOOK] HubSpot: {len(events)} event(s)", flush=True)
-        
+
         results = []
-        
+
         for evt in events:
             try:
                 props = evt.get("properties", {})
                 ot = evt.get("objectType", "contact").lower()
                 hs_id = str(evt.get("objectId", ""))
-                
-                owner_email = (
-                    evt.get("subscription", {}).get("ownerId") or
-                    props.get("hubspot_owner_email", {}).get("value") or
-                    ""
-                )
-                
-                if "synchmrv@" in str(owner_email).lower():
-                    crm_name = "integritasmrv"
-                    cfg = {
-                        "host": "10.0.13.2",
-                        "port": 5432,
-                        "user": "integritasmrv_crm_user",
-                        "password": "oYxxPKRfAHAD263VSDcKmljKY0vInx2QTl6PooKoqmmiDops",
-                        "database": "integritasmrv_crm",
-                        "ssl": None
-                    }
-                elif "syncpower@" in str(owner_email).lower():
-                    crm_name = "poweriq"
-                    cfg = {
-                        "host": "10.0.14.2",
-                        "port": 5432,
-                        "user": "poweriq_crm_user",
-                        "password": "P0w3r1Q_CRM_S3cur3_P@ss_2026",
-                        "database": "poweriq_crm",
-                        "ssl": None
-                    }
-                else:
-                    crm_name = "integritasmrv"
-                    cfg = {
-                        "host": "10.0.13.2",
-                        "port": 5432,
-                        "user": "integritasmrv_crm_user",
-                        "password": "oYxxPKRfAHAD263VSDcKmljKY0vInx2QTl6PooKoqmmiDops",
-                        "database": "integritasmrv_crm",
-                        "ssl": None
-                    }
-                
+
+                owner_email = await resolve_owner_email(evt)
+                crm_name, cfg = await get_crm_for_owner(owner_email)
+                cfg["ssl"] = None
+
                 conn = await asyncpg.connect(**cfg)
-                
+
                 if "company" in ot:
                     nv = props.get("name", props.get("company", {}))
                     name = nv.get("value", "") if isinstance(nv, dict) else str(nv or "")
                     if not name:
                         name = "Company " + hs_id
-                    
+
                     ex = await conn.fetchrow("SELECT id FROM nb_crm_customers WHERE hubspot_id = $1", hs_id)
                     if ex:
                         await conn.execute('UPDATE nb_crm_customers SET enrichment_status = $2, "updatedAt" = NOW() WHERE hubspot_id = $1', hs_id, "To Be Enriched")
@@ -252,7 +289,7 @@ async def webhook_hubspot(request: Request):
                     full = (fn2 + " " + ln2).strip() or "Unknown"
                     ev2 = props.get("email", {})
                     email = ev2.get("value", "") if isinstance(ev2, dict) else str(ev2 or "")
-                    
+
                     ex = await conn.fetchrow("SELECT id FROM nb_crm_contacts WHERE hubspot_id = $1", hs_id)
                     if ex:
                         await conn.execute('UPDATE nb_crm_contacts SET enrichment_status = $2, "updatedAt" = NOW() WHERE hubspot_id = $1', hs_id, "To Be Enriched")
@@ -260,21 +297,24 @@ async def webhook_hubspot(request: Request):
                     else:
                         row = await conn.fetchrow('INSERT INTO nb_crm_contacts (name, email, hubspot_id, enrichment_status, "updatedAt", "createdAt") VALUES ($1, $2, $3, $4, NOW(), NOW()) RETURNING id', full, email or None, hs_id, "To Be Enriched")
                         results.append({"action": "created", "crm": crm_name, "type": "contact", "id": row["id"] if row else None})
-                
+
                 await conn.close()
-                
+
             except Exception as ee:
                 print(f"[WEBHOOK] Event error: {ee}")
                 results.append({"error": str(ee)[:100]})
-        
+
         return {"status": "processed", "results": results}
-        
+
     except Exception as e:
         print(f"HubSpot webhook error: {e}")
         return {"status": "error", "detail": str(e)}
+
+
 @app.get("/chatwoot/webhook")
 async def chatwoot_verify():
     return {"status": "ok"}
+
 
 @app.post("/chatwoot/webhook")
 async def chatwoot_webhook(request: Request):
@@ -308,6 +348,7 @@ async def chatwoot_webhook(request: Request):
     except Exception as e:
         print(f"Chatwoot error: {e}")
         return {"status": "error"}
+
 
 @app.post("/ask")
 async def ask(request: AskRequest, meta: Meta):
