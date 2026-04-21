@@ -51,8 +51,8 @@ async def get_crm_conn():
 
 async def get_poweriq_conn():
     return await asyncpg.connect(
-        host=POWERIQ_HOST,
-        port=POWERIQ_PORT,
+        host="127.0.0.1",
+        port=15433,
         user=POWERIQ_USER,
         password=POWERIQ_PASS,
         database=POWERIQ_DB,
