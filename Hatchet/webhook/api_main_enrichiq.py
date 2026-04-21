@@ -191,16 +191,43 @@ async def webhook_hubspot(request: Request):
                 props = evt.get("properties", {})
                 ot = evt.get("objectType", "contact").lower()
                 hs_id = str(evt.get("objectId", ""))
-                crm_name = "integritasmrv"
                 
-                cfg = {
-                    "host": "10.0.13.2",
-                    "port": 5432,
-                    "user": "integritasmrv_crm_user",
-                    "password": "oYxxPKRfAHAD263VSDcKmljKY0vInx2QTl6PooKoqmmiDops",
-                    "database": "integritasmrv_crm",
-                    "ssl": None
-                }
+                owner_email = (
+                    evt.get("subscription", {}).get("ownerId") or
+                    props.get("hubspot_owner_email", {}).get("value") or
+                    ""
+                )
+                
+                if "synchmrv@" in str(owner_email).lower():
+                    crm_name = "integritasmrv"
+                    cfg = {
+                        "host": "10.0.13.2",
+                        "port": 5432,
+                        "user": "integritasmrv_crm_user",
+                        "password": "oYxxPKRfAHAD263VSDcKmljKY0vInx2QTl6PooKoqmmiDops",
+                        "database": "integritasmrv_crm",
+                        "ssl": None
+                    }
+                elif "syncpower@" in str(owner_email).lower():
+                    crm_name = "poweriq"
+                    cfg = {
+                        "host": "10.0.14.2",
+                        "port": 5432,
+                        "user": "poweriq_crm_user",
+                        "password": "P0w3r1Q_CRM_S3cur3_P@ss_2026",
+                        "database": "poweriq_crm",
+                        "ssl": None
+                    }
+                else:
+                    crm_name = "integritasmrv"
+                    cfg = {
+                        "host": "10.0.13.2",
+                        "port": 5432,
+                        "user": "integritasmrv_crm_user",
+                        "password": "oYxxPKRfAHAD263VSDcKmljKY0vInx2QTl6PooKoqmmiDops",
+                        "database": "integritasmrv_crm",
+                        "ssl": None
+                    }
                 
                 conn = await asyncpg.connect(**cfg)
                 
