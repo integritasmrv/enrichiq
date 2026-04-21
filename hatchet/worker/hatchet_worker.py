@@ -380,31 +380,17 @@ cf7_wf = hatchet.workflow(name="cf7-to-crm-workflow", input_validator=LeadInput,
 
 @cf7_wf.task(name="process-lead")
 async def process_lead(input: LeadInput, ctx: Context) -> LeadOutput:
-    log.info("CF7 lead: %s", input.message)
+    log.info("CF7 lead event received: %s", input.message)
     
     parsed = parse_cf7_message(input.message)
-    log.info("Parsed CF7 lead: name=%s %s, email=%s, company=%s",
+    log.info("CF7 lead parsed: name=%s %s, email=%s, company=%s",
              parsed["first_name"], parsed["last_name"], parsed["email"], parsed["company"])
     
-    if not parsed["email"] or "@" not in parsed["email"]:
-        log.warning("Invalid email, skipping CRM insert: %s", parsed["email"])
-        return LeadOutput(result=f"Skipped: invalid email", lead_id=None)
+    # Note: PowerIQ insert is handled by the API (integritasmrv-api) directly.
+    # This worker just acknowledges the event for workflow tracking.
     
-    lead_id = await insert_cf7_lead_to_poweriq(
-        first_name=parsed["first_name"],
-        last_name=parsed["last_name"],
-        email=parsed["email"],
-        phone=parsed["phone"],
-        company=parsed["company"],
-        message=parsed["message"],
-    )
-    
-    if lead_id:
-        log.info("Inserted CF7 lead into PowerIQ CRM: id=%d", lead_id)
-        return LeadOutput(result=f"Inserted: lead_id={lead_id}", lead_id=lead_id)
-    else:
-        log.error("Failed to insert CF7 lead into PowerIQ CRM")
-        return LeadOutput(result="Failed to insert", lead_id=None)
+    log.info("CF7 lead event acknowledged - API handles PowerIQ insert")
+    return LeadOutput(result=f"CF7 lead acknowledged: {parsed['email']}", lead_id=None)
 
 
 class HubSpotInput(BaseModel):
