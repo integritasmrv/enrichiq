@@ -24,24 +24,14 @@ class Loader:
     def cv(self, n):
         return psycopg2.connect(host=self.c.host, port=self.c.port, database=n, user=self.c.user, password=self.c.password)
     
-    def cm(self):
-        return psycopg2.connect(host=self.c.host, port=self.c.port, database="BE KBO MASTER", user=self.c.user, password=self.c.password)
-    
     def load(self, version):
         vd = "BE KBO " + version
-        logger.info("Creating database " + vd)
-        conn = self.cv("postgres")
-        conn.autocommit = True
-        cur = conn.cursor()
-        cur.execute("DROP DATABASE IF EXISTS \"" + vd + "\"")
-        cur.execute("CREATE DATABASE \"" + vd + "\"")
-        conn.close()
+        logger.info("Using existing database " + vd)
         
         conn = self.cv(vd)
         cur = conn.cursor()
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo")
         conn.commit()
-        conn.close()
         
         tables = {
             "enterprise": ["EnterpriseNumber", "Status", "JuridicalSituation", "TypeOfEnterprise", "JuridicalForm", "JuridicalFormCAC", "StartDate"],
