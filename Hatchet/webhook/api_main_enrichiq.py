@@ -11,7 +11,7 @@ import asyncpg
 
 app = FastAPI(title="IntegritasMRV Chat + RAG")
 
-HS_PAT = os.environ.get("HUBSPOT_API_TOKEN", "")
+HS_PAT = os.environ.get("HUBSPOT_API_TOKEN", "") or os.environ.get("HUBSPOT_SYNC_TOKEN", "")
 HATCHET_TOKEN = os.environ.get("HATCHET_CLIENT_TOKEN", "")
 HATCHET_HOST = os.environ.get("HATCHET_CLIENT_HOST_PORT", "10.0.20.1:7070")
 HATCHET_REST_URL = f"http://{HATCHET_HOST}/api/v1/events"
