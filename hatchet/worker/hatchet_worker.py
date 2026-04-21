@@ -60,6 +60,12 @@ async def get_poweriq_conn():
     )
 
 
+async def get_conn_for_crm(crm_name: str):
+    if crm_name == "poweriq":
+        return await get_poweriq_conn()
+    return await get_crm_conn()
+
+
 async def insert_cf7_lead_to_poweriq(first_name: str, last_name: str, email: str, phone: str, company: str, message: str) -> int | None:
     conn = await get_poweriq_conn()
     try:
@@ -120,8 +126,8 @@ def parse_cf7_message(message: str) -> dict:
     return result
 
 
-async def claim_company(company_id: str) -> dict | None:
-    conn = await get_crm_conn()
+async def claim_company(company_id: str, crm_name: str = "integritasmrv") -> dict | None:
+    conn = await get_conn_for_crm(crm_name)
     try:
         row = await conn.fetchrow(
             """
@@ -141,8 +147,8 @@ async def claim_company(company_id: str) -> dict | None:
         await conn.close()
 
 
-async def claim_contact(contact_id: str) -> dict | None:
-    conn = await get_crm_conn()
+async def claim_contact(contact_id: str, crm_name: str = "integritasmrv") -> dict | None:
+    conn = await get_conn_for_crm(crm_name)
     try:
         row = await conn.fetchrow(
             """
@@ -161,8 +167,8 @@ async def claim_contact(contact_id: str) -> dict | None:
         await conn.close()
 
 
-async def write_crm_company(company_id: str, enriched: dict):
-    conn = await get_crm_conn()
+async def write_crm_company(company_id: str, enriched: dict, crm_name: str = "integritasmrv"):
+    conn = await get_conn_for_crm(crm_name)
     try:
         sets = ["website = $1", "domain = $2", "linkedin_url = $3",
                 "industry = $4", "country = $5", "company_logo_url = $6",
@@ -193,8 +199,8 @@ async def write_crm_company(company_id: str, enriched: dict):
         await conn.close()
 
 
-async def write_crm_contact(contact_id: str, enriched: dict):
-    conn = await get_crm_conn()
+async def write_crm_contact(contact_id: str, enriched: dict, crm_name: str = "integritasmrv"):
+    conn = await get_conn_for_crm(crm_name)
     try:
         sets = ["email = $1", "phone = $2", "title = $3", "linkedin = $4",
                 "industry = $5", "enrichment_status = $6", "enrichment_score = $7",
@@ -341,6 +347,7 @@ class EnrichInput(BaseModel):
     website: str | None = None
     country: str | None = None
     hubspot_id: str | None = None
+    crm_name: str = "integritasmrv"
 
 
 class EnrichOutput(BaseModel):
@@ -356,6 +363,7 @@ class ContactEnrichInput(BaseModel):
     name: str | None = None
     email: str | None = None
     hubspot_id: str | None = None
+    crm_name: str = "integritasmrv"
 
 
 class ContactEnrichOutput(BaseModel):
@@ -447,7 +455,7 @@ enr_wf = hatchet.workflow(name="enrichment-workflow", input_validator=EnrichInpu
 async def enrich_company(input: EnrichInput, ctx: Context) -> EnrichOutput:
     log.info("Company enrichment started: id=%s name=%s", input.company_id, input.name)
 
-    claimed = await claim_company(input.company_id)
+    claimed = await claim_company(input.company_id, input.crm_name)
     if not claimed:
         log.warning("Could not claim company id=%s — may already be busy", input.company_id)
         return EnrichOutput(status="skipped", score=0, notes="already_busy", sources=[], hubspot_sync="skipped")
@@ -455,7 +463,7 @@ async def enrich_company(input: EnrichInput, ctx: Context) -> EnrichOutput:
     enriched = await searxng_enrich_company(claimed["name"], claimed.get("country"), claimed.get("website"))
     enriched["run_id"] = ctx.workflow_run_id
 
-    await write_crm_company(input.company_id, enriched)
+    await write_crm_company(input.company_id, enriched, input.crm_name)
 
     hubspot_sync = await write_hubspot_company(
         claimed.get("hubspot_id") or input.hubspot_id,
@@ -487,7 +495,7 @@ contact_wf = hatchet.workflow(
 async def enrich_contact(input: ContactEnrichInput, ctx: Context) -> ContactEnrichOutput:
     log.info("Contact enrichment started: id=%s name=%s", input.contact_id, input.name)
 
-    claimed = await claim_contact(input.contact_id)
+    claimed = await claim_contact(input.contact_id, input.crm_name)
     if not claimed:
         log.warning("Could not claim contact id=%s — may already be busy", input.contact_id)
         return ContactEnrichOutput(status="skipped", score=0, notes="already_busy", sources=[], hubspot_sync="skipped")
@@ -509,7 +517,7 @@ async def enrich_contact(input: ContactEnrichInput, ctx: Context) -> ContactEnri
         "run_id": ctx.workflow_run_id,
     }
 
-    await write_crm_contact(input.contact_id, enriched)
+    await write_crm_contact(input.contact_id, enriched, input.crm_name)
 
     hubspot_sync = await write_hubspot_contact(
         claimed.get("hubspot_id") or input.hubspot_id,
