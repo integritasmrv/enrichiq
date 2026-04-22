@@ -2,7 +2,8 @@
 """
 Production Pipeline for Company Register Data
 =============================================
-Optimized for speed with large datasets.
+Simple, fast COPY-based merge.
+Strategy: COPY to staging -> DELETE matching -> INSERT FROM staging
 """
 import sys
 import os
@@ -19,57 +20,31 @@ DB_USER = os.getenv('DB_USER', 'aiuser')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'aipassword123')
 MASTER_DB = 'BE KBO MASTER'
 
-LARGE_TABLE_THRESHOLD = 1_000_000
-
-DATE_COLUMNS = {'startdate'}
-DATE_TABLE_COLUMNS = {
-    'enterprise': ['startdate'],
-    'establishment': ['startdate'],
-    'branch': ['startdate'],
-}
-
 TABLES = [
-    ("Enterprise.csv", "kbo_master.enterprise", "kbo.enterprise", ["EnterpriseNumber"]),
-    ("Establishment.csv", "kbo_master.establishment", "kbo.establishment", ["EstablishmentNumber"]),
-    ("Denomination.csv", "kbo_master.denomination", "kbo.denomination", ["EntityNumber"]),
-    ("Address.csv", "kbo_master.address", "kbo.address", ["EntityNumber", "TypeOfAddress"]),
-    ("Contact.csv", "kbo_master.contact", "kbo.contact", ["EntityNumber"]),
-    ("Activity.csv", "kbo_master.activity", "kbo.activity", ["EntityNumber", "ActivityGroup", "NaceVersion", "NaceCode"]),
-    ("Branch.csv", "kbo_master.branch", "kbo.branch", ["Id"]),
-    ("Code.csv", "kbo_master.code", "kbo.code", ["EntityNumber"]),
+    ("Enterprise.csv", "kbo_master.enterprise", "kbo.enterprise"),
+    ("Establishment.csv", "kbo_master.establishment", "kbo.establishment"),
+    ("Denomination.csv", "kbo_master.denomination", "kbo.denomination"),
+    ("Address.csv", "kbo_master.address", "kbo.address"),
+    ("Contact.csv", "kbo_master.contact", "kbo.contact"),
+    ("Activity.csv", "kbo_master.activity", "kbo.activity"),
+    ("Branch.csv", "kbo_master.branch", "kbo.branch"),
+    ("Code.csv", "kbo_master.code", "kbo.code"),
 ]
+
+PK_COLS = {
+    'enterprise': ['enterprisenumber'],
+    'establishment': ['establishmentnumber'],
+    'denomination': ['entitynumber'],
+    'address': ['entitynumber', 'typeofaddress'],
+    'contact': ['entitynumber'],
+    'activity': ['entitynumber', 'activitygroup', 'naceversion', 'nacecode'],
+    'branch': ['id'],
+    'code': ['entitynumber'],
+}
 
 
 def get_conn(db):
     return psycopg2.connect(host=DB_HOST, port=DB_PORT, database=db, user=DB_USER, password=DB_PASSWORD)
-
-
-def parse_date(value):
-    if value is None or value == '':
-        return None
-    if isinstance(value, str) and '-' in value:
-        try:
-            dt = datetime.strptime(value.strip(), '%d-%m-%Y')
-            return dt.strftime('%Y-%m-%d')
-        except ValueError:
-            pass
-    return None
-
-
-def escape_csv_value(v):
-    if v is None:
-        return ''
-    s = str(v)
-    if '"' in s or ',' in s or '\n' in s:
-        return '"' + s.replace('"', '""') + '"'
-    return s
-
-
-def get_master_columns(conn, table_name):
-    with conn.cursor() as cur:
-        cur.execute("""SELECT column_name FROM information_schema.columns 
-            WHERE table_schema = 'kbo_master' AND table_name = %s ORDER BY ordinal_position""", (table_name,))
-        return [r[0].lower() for r in cur.fetchall()]
 
 
 def init_master():
@@ -87,42 +62,33 @@ def init_master():
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo_master")
         
-        cur.execute("""SELECT table_name FROM information_schema.tables 
-            WHERE table_schema = 'kbo_master' AND table_name = 'enterprise'""")
-        if cur.fetchone():
-            for tbl in ['enterprise', 'establishment', 'branch']:
-                cur.execute(f"""SELECT column_name, data_type FROM information_schema.columns 
-                    WHERE table_schema = 'kbo_master' AND table_name = %s AND column_name = 'startdate'""", (tbl,))
-                row = cur.fetchone()
-                if row and row[1] == 'date':
-                    logger.info(f"Converting {tbl}.startdate from DATE to VARCHAR")
-                    cur.execute(f"ALTER TABLE kbo_master.{tbl} ALTER COLUMN startdate TYPE VARCHAR(20)")
-        else:
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.enterprise (
-                enterprisenumber VARCHAR(20) PRIMARY KEY, status VARCHAR(2),
-                juridicalsituation VARCHAR(10), typeofenterprise VARCHAR(3),
-                juridicalform VARCHAR(10), juridicalformcac VARCHAR(10), startdate VARCHAR(20))""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.establishment (
-                establishmentnumber VARCHAR(20) PRIMARY KEY, enterprisenumber VARCHAR(20),
-                startdate VARCHAR(20), entitynumber VARCHAR(20))""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.denomination (
-                entitynumber VARCHAR(20) PRIMARY KEY, denomination VARCHAR(500), type VARCHAR(10), language VARCHAR(3))""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.address (
-                entitynumber VARCHAR(20), typeofaddress VARCHAR(20), country VARCHAR(5),
-                zipcode VARCHAR(20), municipality VARCHAR(100), street VARCHAR(500),
-                housenumber VARCHAR(20), box VARCHAR(20), extraaddressinfo VARCHAR(500),
-                PRIMARY KEY (entitynumber, typeofaddress))""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.contact (
-                entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(20), value VARCHAR(500), area VARCHAR(20), language VARCHAR(3))""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.activity (
-                entitynumber VARCHAR(20), activitygroup VARCHAR(20), naceversion VARCHAR(10),
-                nacecode VARCHAR(20), classification VARCHAR(20),
-                PRIMARY KEY (entitynumber, activitygroup, naceversion, nacecode))""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.branch (
-                id SERIAL PRIMARY KEY, enterprisenumber VARCHAR(20), establishmentnumber VARCHAR(20), startdate VARCHAR(20))""")
-            cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.code (
-                entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(50), code VARCHAR(50))""")
+        # Create tables with lowercase columns
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.enterprise (
+            enterprisenumber VARCHAR(20) PRIMARY KEY, status VARCHAR(2),
+            juridicalsituation VARCHAR(10), typeofenterprise VARCHAR(3),
+            juridicalform VARCHAR(10), juridicalformcac VARCHAR(10), startdate VARCHAR(20))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.establishment (
+            establishmentnumber VARCHAR(20) PRIMARY KEY, enterprisenumber VARCHAR(20),
+            startdate VARCHAR(20), entitynumber VARCHAR(20))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.denomination (
+            entitynumber VARCHAR(20) PRIMARY KEY, denomination VARCHAR(500), type VARCHAR(10), language VARCHAR(3))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.address (
+            entitynumber VARCHAR(20), typeofaddress VARCHAR(20), country VARCHAR(5),
+            zipcode VARCHAR(20), municipality VARCHAR(100), street VARCHAR(500),
+            housenumber VARCHAR(20), box VARCHAR(20), extraaddressinfo VARCHAR(500),
+            PRIMARY KEY (entitynumber, typeofaddress))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.contact (
+            entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(20), value VARCHAR(500), area VARCHAR(20), language VARCHAR(3))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.activity (
+            entitynumber VARCHAR(20), activitygroup VARCHAR(20), naceversion VARCHAR(10),
+            nacecode VARCHAR(20), classification VARCHAR(20),
+            PRIMARY KEY (entitynumber, activitygroup, naceversion, nacecode))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.branch (
+            id SERIAL PRIMARY KEY, enterprisenumber VARCHAR(20), establishmentnumber VARCHAR(20), startdate VARCHAR(20))""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.code (
+            entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(50), code VARCHAR(50))""")
 
+        # State and metrics tables
         cur.execute("""CREATE TABLE IF NOT EXISTS public.pipeline_state (
             id SERIAL PRIMARY KEY, extract_version VARCHAR(50) UNIQUE NOT NULL,
             status VARCHAR(20) DEFAULT 'pending', load_started_at TIMESTAMP,
@@ -218,7 +184,7 @@ def load_extract(extract_path, label):
     try:
         create_version_db(label)
         total = 0
-        for csv_file, master_table, version_table, pkeys in TABLES:
+        for csv_file, master_table, version_table in TABLES:
             csv_path = os.path.join(extract_path, csv_file)
             if not os.path.exists(csv_path):
                 logger.warning(f"CSV not found: {csv_path}, skipping")
@@ -247,145 +213,8 @@ def load_extract(extract_path, label):
         raise
 
 
-def get_column_mapping(version_conn, version_table, master_conn, master_table):
-    """Build mapping from source (version) columns to master columns."""
-    with version_conn.cursor() as cur:
-        schema, tbl = version_table.split('.')
-        cur.execute("""SELECT column_name FROM information_schema.columns 
-            WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position""", (schema, tbl))
-        src_cols = [r[0] for r in cur.fetchall()]
-    
-    master_cols = get_master_columns(master_conn, master_table.split('.')[1])
-    master_cols_lower = [c.lower() for c in master_cols]
-    
-    src_to_master = {}
-    for src_col in src_cols:
-        src_lower = src_col.lower()
-        if src_lower in master_cols_lower:
-            idx = master_cols_lower.index(src_lower)
-            src_to_master[src_col] = master_cols[idx]
-    
-    return src_cols, src_to_master
-
-
-def merge_table_fast(master_conn, version_conn, master_table, version_table, table_name, pkeys, date_cols, batch_size=50000):
-    """Fast merge using staging + DELETE/INSERT."""
-    staging_table = f'kbo_staging_{table_name}'
-    
-    src_cols, src_to_master = get_column_mapping(version_conn, version_table, master_conn, master_table)
-    
-    if not src_cols:
-        return 0, 0
-    
-    master_cols = list(src_to_master.values())
-    
-    pkeys_lower = [pk.lower() for pk in pkeys]
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {master_table}")
-        master_before = cur.fetchone()[0]
-    
-    with version_conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {version_table}")
-        source_count = cur.fetchone()[0]
-    
-    logger.info(f"  Source: {source_count:,}, Master before: {master_before:,}")
-    
-    # Create staging table with source columns
-    with master_conn.cursor() as cur:
-        cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
-        col_defs = [f'"{c}" TEXT' for c in src_cols]
-        cur.execute(f"CREATE TABLE {staging_table} ({', '.join(col_defs)})")
-    master_conn.commit()
-    
-    # Stream data into staging in batches
-    with version_conn.cursor() as cur:
-        cur.execute(f"SELECT {', '.join(src_cols)} FROM {version_table}")
-        
-        total_staged = 0
-        while True:
-            rows = cur.fetchmany(batch_size)
-            if not rows:
-                break
-            
-            batch = []
-            for row in rows:
-                parsed = []
-                for col, val in zip(src_cols, row):
-                    master_col = src_to_master.get(col, col)
-                    if master_col in date_cols and val:
-                        val = parse_date(val) or val
-                    parsed.append(val)
-                batch.append(parsed)
-            
-            with master_conn.cursor() as mc:
-                placeholders = ', '.join(['%s'] * len(src_cols))
-                mc.executemany(f"INSERT INTO {staging_table} VALUES ({placeholders})", batch)
-            master_conn.commit()
-            
-            total_staged += len(rows)
-            if total_staged % 100000 == 0:
-                logger.info(f"  Staged {total_staged:,}...")
-    
-    logger.info(f"  Total staged: {total_staged:,}")
-    
-    # Map staging columns to master columns for the insert
-    master_col_list = [src_to_master.get(c, c) for c in src_cols]
-    
-    # Count new records by checking which PKs from staging don't exist in master
-    pkey_eq_parts = [f's."{p}" = m."{p}"' for p in pkeys_lower]
-    pkey_eq = ' AND '.join(pkey_eq_parts)
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"""
-            CREATE TABLE {staging_table}_newpk AS
-            SELECT s.* FROM {staging_table} s
-            WHERE NOT EXISTS (SELECT 1 FROM {master_table} m WHERE {pkey_eq})
-        """)
-        cur.execute(f"SELECT COUNT(*) FROM {staging_table}_newpk")
-        new_count = cur.fetchone()[0]
-    logger.info(f"  New PKs: {new_count:,}")
-    
-    # Delete matching PKs from master
-    with master_conn.cursor() as cur:
-        cur.execute(f"""
-            DELETE FROM {master_table} m
-            WHERE EXISTS (SELECT 1 FROM {staging_table} s WHERE {pkey_eq})
-        """)
-        deleted = cur.rowcount
-    master_conn.commit()
-    logger.info(f"  Deleted: {deleted:,}")
-    
-    # Insert all from staging
-    staging_select = ', '.join([f'"{c}"' for c in src_cols])
-    master_insert = ', '.join([f'"{c}"' for c in master_col_list])
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"""
-            INSERT INTO {master_table} ({master_insert})
-            SELECT {staging_select} FROM {staging_table}
-        """)
-        inserted = cur.rowcount
-    master_conn.commit()
-    logger.info(f"  Inserted: {inserted:,}")
-    
-    # Cleanup staging tables
-    with master_conn.cursor() as cur:
-        cur.execute(f"DROP TABLE {staging_table}")
-        cur.execute(f"DROP TABLE {staging_table}_newpk")
-    master_conn.commit()
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {master_table}")
-        master_after = cur.fetchone()[0]
-    
-    inserts = max(0, master_after - master_before)
-    updates = deleted  # Approximate
-    
-    return inserts, updates
-
-
 def merge_extract(label):
+    """Fast merge: COPY source -> staging -> DELETE+INSERT"""
     dbname = get_version_db(label)
     master_conn = get_conn(MASTER_DB)
     version_conn = get_conn(dbname)
@@ -402,49 +231,109 @@ def merge_extract(label):
         master_conn.commit()
 
     total_ops = 0
-    total_inserts = 0
-    total_updates = 0
-    
     try:
-        for csv_file, master_table, version_table, pkeys in TABLES:
+        for csv_file, master_table, version_table in TABLES:
             table_name = master_table.split('.')[1]
-            date_cols = DATE_TABLE_COLUMNS.get(table_name, [])
+            pkeys = PK_COLS.get(table_name, [])
             
+            logger.info(f"Merging {master_table}...")
+
+            # Get source columns
+            with version_conn.cursor() as cur:
+                schema, tbl = version_table.split('.')
+                cur.execute("""SELECT column_name FROM information_schema.columns 
+                    WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position""", (schema, tbl))
+                src_cols = [r[0] for r in cur.fetchall()]
+
+            # Get source count
             with version_conn.cursor() as cur:
                 cur.execute(f"SELECT COUNT(*) FROM {version_table}")
                 source_count = cur.fetchone()[0]
             
-            logger.info(f"Merging {master_table} ({source_count:,} rows)...")
-            
-            if source_count > LARGE_TABLE_THRESHOLD:
-                logger.info(f"  Using FAST merge (> {LARGE_TABLE_THRESHOLD:,})")
-                inserts, updates = merge_table_fast(
-                    master_conn, version_conn, master_table, version_table,
-                    table_name, pkeys, date_cols
-                )
-            else:
-                logger.info(f"  Using standard merge")
-                inserts, updates = merge_table_standard(
-                    master_conn, version_conn, master_table, version_table,
-                    table_name, pkeys, date_cols
-                )
-            
-            total_inserts += inserts
-            total_updates += updates
-            total_ops += source_count
-            
+            # Get master count before
             with master_conn.cursor() as cur:
-                if inserts > 0:
-                    cur.execute("""INSERT INTO public.pipeline_metrics 
-                        (extract_version, table_name, operation, rows_count) 
-                        VALUES (%s, %s, 'INSERT', %s)""", (label, table_name, inserts))
-                if updates > 0:
-                    cur.execute("""INSERT INTO public.pipeline_metrics 
-                        (extract_version, table_name, operation, rows_count) 
-                        VALUES (%s, %s, 'UPDATE', %s)""", (label, table_name, updates))
+                cur.execute(f"SELECT COUNT(*) FROM {master_table}")
+                master_before = cur.fetchone()[0]
+
+            logger.info(f"  Source: {source_count:,}, Master before: {master_before:,}")
+
+            # Export to CSV
+            temp_file = f'/tmp/{table_name}_merge.csv'
+            with version_conn.cursor() as cur:
+                cur.execute(f"COPY (SELECT {', '.join(src_cols)} FROM {version_table}) TO STDOUT WITH (FORMAT CSV, HEADER, DELIMITER ',')")
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    for row in cur:
+                        f.write(','.join(str(v) if v is not None else '' for v in row) + '\n')
+
+            logger.info(f"  Exported to {temp_file}")
+
+            # Create temp table in master
+            staging_table = f'kbo_merge_staging_{table_name}'
+            with master_conn.cursor() as cur:
+                cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                col_defs = [f'col{i} TEXT' for i in range(len(src_cols))]
+                cur.execute(f"CREATE TABLE {staging_table} ({', '.join(col_defs)})")
             master_conn.commit()
-            
-            logger.info(f"  {master_table}: {inserts:,} INSERT, {updates:,} UPDATE")
+
+            # COPY into staging
+            with open(temp_file, 'r', encoding='utf-8') as f:
+                with master_conn.cursor() as cur:
+                    cur.copy_expert(f"COPY {staging_table} FROM STDIN WITH (FORMAT CSV, HEADER, DELIMITER ',', NULL '')", f)
+            master_conn.commit()
+            os.remove(temp_file)
+
+            # Get staging count
+            with master_conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
+                staging_count = cur.fetchone()[0]
+            logger.info(f"  Staged: {staging_count:,}")
+
+            # Build DELETE + INSERT
+            if pkeys:
+                # Build WHERE clause for matching rows
+                pk_idx = [src_cols.index(pk) for pk in pkeys if pk in src_cols]
+                where_parts = [f"m.col{pk_idx[i]} = s.col{pk_idx[i]}" for i in range(len(pk_idx))]
+                where_clause = ' AND '.join(where_parts)
+                
+                # Delete matching from master
+                with master_conn.cursor() as cur:
+                    cur.execute(f"""
+                        DELETE FROM {master_table} m
+                        WHERE EXISTS (SELECT 1 FROM {staging_table} s WHERE {where_clause})
+                    """)
+                    deleted = cur.rowcount
+                master_conn.commit()
+                logger.info(f"  Deleted: {deleted:,}")
+            else:
+                deleted = 0
+
+            # Insert all from staging
+            col_list = ', '.join([f'col{i}' for i in range(len(src_cols))])
+            with master_conn.cursor() as cur:
+                cur.execute(f"INSERT INTO {master_table} SELECT {col_list} FROM {staging_table}")
+                inserted = cur.rowcount
+            master_conn.commit()
+            logger.info(f"  Inserted: {inserted:,}")
+
+            # Cleanup
+            with master_conn.cursor() as cur:
+                cur.execute(f"DROP TABLE {staging_table}")
+            master_conn.commit()
+
+            # Get final count
+            with master_conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {master_table}")
+                master_after = cur.fetchone()[0]
+
+            # Record metrics (total operations = source_count)
+            with master_conn.cursor() as cur:
+                cur.execute("""INSERT INTO public.pipeline_metrics 
+                    (extract_version, table_name, operation, rows_count) 
+                    VALUES (%s, %s, 'MERGED', %s)""", (label, table_name, source_count))
+            master_conn.commit()
+
+            logger.info(f"  {master_table}: {source_count:,} merged ({deleted:,} replaced, {inserted:,} new net)")
+            total_ops += source_count
 
         with master_conn.cursor() as cur:
             cur.execute("""UPDATE public.pipeline_state 
@@ -452,7 +341,7 @@ def merge_extract(label):
                 WHERE extract_version = %s""", (total_ops, label))
             master_conn.commit()
 
-        logger.info(f"Merge complete: {total_ops:,} total ({total_inserts:,} INSERT, {total_updates:,} UPDATE)")
+        logger.info(f"Merge complete: {total_ops:,} total")
         master_conn.close()
         version_conn.close()
         return True
@@ -469,93 +358,6 @@ def merge_extract(label):
         master_conn.close()
         version_conn.close()
         raise
-
-
-def merge_table_standard(master_conn, version_conn, master_table, version_table, table_name, pkeys, date_cols, batch_size=5000):
-    """Standard ON CONFLICT merge for small tables."""
-    staging_table = f'kbo_staging_{table_name}'
-    
-    src_cols, src_to_master = get_column_mapping(version_conn, version_table, master_conn, master_table)
-    master_cols = list(src_to_master.values())
-    
-    pkeys_lower = [pk.lower() for pk in pkeys]
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {master_table}")
-        master_before = cur.fetchone()[0]
-    
-    with version_conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {version_table}")
-        source_count = cur.fetchone()[0]
-    
-    logger.info(f"  Source: {source_count:,}, Master before: {master_before:,}")
-    
-    temp_file = f'/tmp/{staging_table}.csv'
-    
-    with version_conn.cursor() as cur:
-        cur.execute(f"SELECT {', '.join(src_cols)} FROM {version_table}")
-        
-        with open(temp_file, 'w', encoding='utf-8', errors='replace') as f:
-            master_select = [src_to_master.get(c, c) for c in src_cols]
-            f.write(','.join([f'"{c}"' for c in master_select]) + '\n')
-            
-            while True:
-                rows = cur.fetchmany(batch_size)
-                if not rows:
-                    break
-                
-                for row in rows:
-                    parsed = []
-                    for col, val in zip(src_cols, row):
-                        master_col = src_to_master.get(col, col)
-                        if master_col in date_cols:
-                            val = parse_date(val) or val
-                        parsed.append(val)
-                    escaped = [escape_csv_value(v) for v in parsed]
-                    f.write(','.join(escaped) + '\n')
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
-        col_defs = [f'"{c}" TEXT' for c in master_select]
-        cur.execute(f"CREATE TABLE {staging_table} ({', '.join(col_defs)})")
-    master_conn.commit()
-    
-    with open(temp_file, 'r', encoding='utf-8', errors='replace') as f:
-        with master_conn.cursor() as cur:
-            cur.copy_expert(f"COPY {staging_table} FROM STDIN WITH (FORMAT CSV, HEADER, DELIMITER ',', NULL '')", f)
-    master_conn.commit()
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
-        staged = cur.fetchone()[0]
-    logger.info(f"  Staged: {staged:,}")
-    
-    pk_str = ", ".join([f'"{p}"' for p in pkeys_lower])
-    non_pk = [c for c in master_select if c not in pkeys_lower]
-    update_set = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in non_pk]) if non_pk else '"nothing"=1'
-    
-    merge_sql = f"""INSERT INTO {master_table} ({', '.join([f'"{c}"' for c in master_select])})
-        SELECT {', '.join([f'"{c}"' for c in master_select])} FROM {staging_table}
-        ON CONFLICT ({pk_str}) DO UPDATE SET {update_set}"""
-    
-    with master_conn.cursor() as cur:
-        cur.execute(merge_sql)
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"SELECT COUNT(*) FROM {master_table}")
-        master_after = cur.fetchone()[0]
-    
-    master_conn.commit()
-    
-    inserts = max(0, master_after - master_before)
-    updates = staged - inserts
-    
-    with master_conn.cursor() as cur:
-        cur.execute(f"DROP TABLE {staging_table}")
-    master_conn.commit()
-    os.remove(temp_file)
-    
-    return inserts, updates
 
 
 def show_status():
@@ -575,13 +377,13 @@ def show_status():
                 print(f"  Error: {row[4]}")
 
     print("\n" + "-"*70)
-    print("METRICS (INSERT vs UPDATE)")
+    print("METRICS")
     print("-"*70)
     with conn.cursor() as cur:
         cur.execute("""SELECT extract_version, table_name, operation, SUM(rows_count) 
             FROM public.pipeline_metrics 
             GROUP BY extract_version, table_name, operation 
-            ORDER BY extract_version, table_name, operation""")
+            ORDER BY extract_version, table_name""")
         for row in cur.fetchall():
             print(f"  {row[0]}/{row[1]}/{row[2]}: {row[3]:,}")
 
@@ -594,9 +396,6 @@ def show_status():
             UNION ALL SELECT 'address', COUNT(*) FROM kbo_master.address
             UNION ALL SELECT 'contact', COUNT(*) FROM kbo_master.contact
             UNION ALL SELECT 'activity', COUNT(*) FROM kbo_master.activity
-            UNION ALL SELECT 'denomination', COUNT(*) FROM kbo_master.denomination
-            UNION ALL SELECT 'branch', COUNT(*) FROM kbo_master.branch
-            UNION ALL SELECT 'code', COUNT(*) FROM kbo_master.code
             ORDER BY tbl""")
         for row in cur.fetchall():
             print(f"  {row[0]}: {row[1]:,}")
