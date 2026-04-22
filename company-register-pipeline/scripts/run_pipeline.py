@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
 Production Pipeline for Company Register Data
-=============================================
-Fast COPY-based merge strategy with proper column name handling.
 """
 import sys
 import os
@@ -19,7 +17,7 @@ DB_USER = os.getenv('DB_USER', 'aiuser')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'aipassword123')
 MASTER_DB = 'BE KBO MASTER'
 
-DATE_COLUMNS = {'startdate', 'StartDate', 'start_date', 'Start_Date'}
+DATE_COLUMNS = {'startdate'}
 DATE_TABLE_COLUMNS = {
     'enterprise': ['startdate'],
     'establishment': ['startdate'],
@@ -64,7 +62,6 @@ def escape_csv_value(v):
 
 
 def get_master_columns(master_conn, table_name):
-    """Get column names from master table in lowercase."""
     with master_conn.cursor() as cur:
         cur.execute("""SELECT column_name FROM information_schema.columns 
             WHERE table_schema = 'kbo_master' AND table_name = %s ORDER BY ordinal_position""", (table_name,))
@@ -86,7 +83,6 @@ def init_master():
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo_master")
         
-        # Check existing tables and convert date columns if needed
         cur.execute("""SELECT table_name FROM information_schema.tables 
             WHERE table_schema = 'kbo_master' AND table_name = 'enterprise'""")
         if cur.fetchone():
@@ -289,16 +285,18 @@ def merge_extract(label):
                 logger.warning(f"No columns found for {version_table}")
                 continue
 
-            # Create column mapping (source name -> master name)
+            # Find common columns between source and master
+            # Source column name (lowercased) -> master column name
             col_mapping = {}
+            used_master_cols = set()
+            
             for src_col in src_cols:
                 src_lower = src_col.lower()
-                if src_lower in master_cols_lower:
+                if src_lower in master_cols_lower and src_lower not in used_master_cols:
                     idx = master_cols_lower.index(src_lower)
                     col_mapping[src_col] = master_cols[idx]
-                else:
-                    col_mapping[src_col] = src_col
-
+                    used_master_cols.add(src_lower)
+            
             # Get pkeys in master lowercase
             pkeys_lower = [pk.lower() for pk in pkeys]
             
@@ -313,21 +311,24 @@ def merge_extract(label):
 
             logger.info(f"Merging {master_table}: {version_total:,} rows, master before: {master_before:,}")
 
-            # Export source to CSV
+            # Export source to CSV with only mapped columns
             temp_file = f'/tmp/{staging_table}.csv'
             
             with version_conn.cursor() as cur:
-                col_list = ', '.join(src_cols)
+                # Only select columns that we can map
+                select_cols = [c for c in src_cols if c in col_mapping]
+                col_list = ', '.join(select_cols)
                 cur.execute(f"SELECT {col_list} FROM {version_table}")
                 rows = cur.fetchall()
                 
                 with open(temp_file, 'w', encoding='utf-8', errors='replace') as f:
                     # Header uses master column names
-                    f.write(','.join([f'"{col_mapping[c]}"' for c in src_cols]) + '\n')
+                    master_select = [col_mapping[c] for c in select_cols]
+                    f.write(','.join([f'"{c}"' for c in master_select]) + '\n')
                     
                     for row in rows:
                         parsed_row = []
-                        for src_col, val in zip(src_cols, row):
+                        for src_col, val in zip(select_cols, row):
                             master_col = col_mapping[src_col]
                             if master_col in date_cols:
                                 parsed_val = parse_date(val)
@@ -340,10 +341,11 @@ def merge_extract(label):
 
             logger.info(f"  Exported to {temp_file}")
 
-            # Create staging table with master column names
+            # Create staging table with only mapped columns
+            master_select = [col_mapping[c] for c in select_cols if c in col_mapping]
             with master_conn.cursor() as cur:
                 cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
-                col_defs = [f'"{c}" TEXT' for c in master_cols]
+                col_defs = [f'"{c}" TEXT' for c in master_select]
                 cur.execute(f"CREATE TABLE {staging_table} ({', '.join(col_defs)})")
             master_conn.commit()
 
@@ -361,12 +363,12 @@ def merge_extract(label):
 
             # Build merge SQL with lowercase column names
             pk_str = ", ".join([f'"{p}"' for p in pkeys_lower])
-            non_pk_master = [c for c in master_cols if c not in pkeys_lower]
+            non_pk_master = [c for c in master_select if c not in pkeys_lower]
             
-            select_list = ", ".join([f'"{col_mapping.get(c, c)}"' for c in src_cols])
+            select_list = ", ".join([f'"{c}"' for c in master_select])
             update_set = ", ".join([f'"{c}"=EXCLUDED."{c}"' for c in non_pk_master]) if non_pk_master else '"nothing"=1'
             
-            merge_sql = f"""INSERT INTO {master_table} ({', '.join([f'"{c}"' for c in master_cols])})
+            merge_sql = f"""INSERT INTO {master_table} ({', '.join([f'"{c}"' for c in master_select])})
                 SELECT {select_list} FROM {staging_table}
                 ON CONFLICT ({pk_str}) DO UPDATE SET {update_set}"""
             
