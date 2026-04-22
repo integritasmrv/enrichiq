@@ -99,7 +99,7 @@ def init_master():
         cur.execute("""CREATE TABLE IF NOT EXISTS public.pipeline_metrics (
             id SERIAL PRIMARY KEY, extract_version VARCHAR(50) NOT NULL,
             table_name VARCHAR(50) NOT NULL, operation VARCHAR(20) NOT NULL,
-            rows_affected BIGINT NOT NULL, recorded_at TIMESTAMP DEFAULT NOW())""")
+            rows_count BIGINT NOT NULL, recorded_at TIMESTAMP DEFAULT NOW())""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_state_version ON public.pipeline_state(extract_version)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_metrics_version ON public.pipeline_metrics(extract_version, table_name)")
     conn.commit()
@@ -281,9 +281,9 @@ def merge_extract(label):
 
             with master_conn.cursor() as cur:
                 if inserts > 0:
-                    cur.execute("INSERT INTO public.pipeline_metrics (extract_version, table_name, operation, rows_affected) VALUES (%s, %s, 'INSERT', %s)", (label, table_name, inserts))
+                    cur.execute("INSERT INTO public.pipeline_metrics (extract_version, table_name, operation, rows_count) VALUES (%s, %s, 'INSERT', %s)", (label, table_name, inserts))
                 if updates > 0:
-                    cur.execute("INSERT INTO public.pipeline_metrics (extract_version, table_name, operation, rows_affected) VALUES (%s, %s, 'UPDATE', %s)", (label, table_name, updates))
+                    cur.execute("INSERT INTO public.pipeline_metrics (extract_version, table_name, operation, rows_count) VALUES (%s, %s, 'UPDATE', %s)", (label, table_name, updates))
             master_conn.commit()
 
             logger.info(f"  -> {inserts:,} INSERT, {updates:,} UPDATE")
@@ -327,7 +327,7 @@ def show_status():
     print("METRICS (INSERT vs UPDATE)")
     print("-"*70)
     with conn.cursor() as cur:
-        cur.execute("SELECT extract_version, table_name, operation, SUM(rows_affected) FROM public.pipeline_metrics GROUP BY extract_version, table_name, operation ORDER BY extract_version, table_name, operation")
+        cur.execute("SELECT extract_version, table_name, operation, SUM(rows_count) FROM public.pipeline_metrics GROUP BY extract_version, table_name, operation ORDER BY extract_version, table_name, operation")
         for row in cur.fetchall():
             print(f"  {row[0]}/{row[1]}/{row[2]}: {row[3]:,}")
 
