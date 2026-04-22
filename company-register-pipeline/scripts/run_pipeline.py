@@ -14,7 +14,6 @@ Usage: python run_pipeline.py <command> [args]
 import sys
 import os
 import logging
-import tempfile
 from datetime import datetime
 import psycopg2
 
@@ -27,17 +26,13 @@ DB_USER = os.getenv('DB_USER', 'aiuser')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'aipassword123')
 MASTER_DB = 'BE KBO MASTER'
 
-# Date columns that need conversion from DD-MM-YYYY
 DATE_COLUMNS = {'startdate', 'StartDate', 'start_date', 'Start_Date'}
-
-# Tables with date columns
 DATE_TABLE_COLUMNS = {
     'enterprise': ['StartDate'],
     'establishment': ['StartDate'],
     'branch': ['StartDate'],
 }
 
-# Staging prefix
 STAGING_PREFIX = 'kbo_staging_'
 
 TABLES = [
@@ -57,7 +52,6 @@ def get_conn(db):
 
 
 def parse_date(value):
-    """Parse date from DD-MM-YYYY to YYYY-MM-DD format."""
     if value is None or value == '':
         return None
     if isinstance(value, str) and '-' in value:
@@ -69,8 +63,16 @@ def parse_date(value):
     return None
 
 
+def escape_csv_value(v):
+    if v is None:
+        return ''
+    s = str(v)
+    if '"' in s or ',' in s or '\n' in s:
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
 def init_master():
-    """Create master database and schema if not exists."""
     logger.info("Initializing master database...")
     conn = get_conn("postgres")
     conn.set_isolation_level(0)
@@ -85,31 +87,18 @@ def init_master():
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo_master")
         
-        # Check if tables exist and their structure
         cur.execute("""SELECT table_name FROM information_schema.tables 
             WHERE table_schema = 'kbo_master' AND table_name = 'enterprise'""")
         if cur.fetchone():
             logger.info("Tables already exist, checking column types...")
-            cur.execute("""SELECT column_name, data_type FROM information_schema.columns 
-                WHERE table_schema = 'kbo_master' AND table_name = 'enterprise' AND column_name = 'StartDate'""")
-            row = cur.fetchone()
-            if row and row[1] == 'date':
-                logger.info("Converting enterprise.StartDate from DATE to VARCHAR")
-                cur.execute("ALTER TABLE kbo_master.enterprise ALTER COLUMN StartDate TYPE VARCHAR(20)")
-            cur.execute("""SELECT column_name, data_type FROM information_schema.columns 
-                WHERE table_schema = 'kbo_master' AND table_name = 'establishment' AND column_name = 'StartDate'""")
-            row = cur.fetchone()
-            if row and row[1] == 'date':
-                logger.info("Converting establishment.StartDate from DATE to VARCHAR")
-                cur.execute("ALTER TABLE kbo_master.establishment ALTER COLUMN StartDate TYPE VARCHAR(20)")
-            cur.execute("""SELECT column_name, data_type FROM information_schema.columns 
-                WHERE table_schema = 'kbo_master' AND table_name = 'branch' AND column_name = 'StartDate'""")
-            row = cur.fetchone()
-            if row and row[1] == 'date':
-                logger.info("Converting branch.StartDate from DATE to VARCHAR")
-                cur.execute("ALTER TABLE kbo_master.branch ALTER COLUMN StartDate TYPE VARCHAR(20)")
+            for tbl, col in [('enterprise', 'StartDate'), ('establishment', 'StartDate'), ('branch', 'StartDate')]:
+                cur.execute(f"""SELECT column_name, data_type FROM information_schema.columns 
+                    WHERE table_schema = 'kbo_master' AND table_name = %s AND column_name = %s""", (tbl, col))
+                row = cur.fetchone()
+                if row and row[1] == 'date':
+                    logger.info(f"Converting {tbl}.{col} from DATE to VARCHAR")
+                    cur.execute(f"ALTER TABLE kbo_master.{tbl} ALTER COLUMN {col} TYPE VARCHAR(20)")
         else:
-            # Create tables with VARCHAR for dates
             cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.enterprise (
                 EnterpriseNumber VARCHAR(20) PRIMARY KEY, Status VARCHAR(2),
                 JuridicalSituation VARCHAR(10), TypeOfEnterprise VARCHAR(3),
@@ -135,7 +124,6 @@ def init_master():
             cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.code (
                 EntityNumber VARCHAR(20) PRIMARY KEY, Type VARCHAR(50), Code VARCHAR(50))""")
 
-        # State and metrics tables
         cur.execute("""CREATE TABLE IF NOT EXISTS public.pipeline_state (
             id SERIAL PRIMARY KEY, extract_version VARCHAR(50) UNIQUE NOT NULL,
             status VARCHAR(20) DEFAULT 'pending', load_started_at TIMESTAMP,
@@ -158,7 +146,6 @@ def get_version_db(label):
 
 
 def create_version_db(label):
-    """Create versioned database for an extract."""
     dbname = get_version_db(label)
     logger.info(f"Creating versioned database: {dbname}")
     conn = get_conn("postgres")
@@ -173,37 +160,39 @@ def create_version_db(label):
     conn = get_conn(dbname)
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo")
-        cur.execute("""CREATE TABLE kbo.enterprise (
-            EnterpriseNumber VARCHAR(20) PRIMARY KEY, Status VARCHAR(2),
-            JuridicalSituation VARCHAR(10), TypeOfEnterprise VARCHAR(3),
-            JuridicalForm VARCHAR(10), JuridicalFormCAC VARCHAR(10), StartDate VARCHAR(20))""")
-        cur.execute("""CREATE TABLE kbo.establishment (
-            EstablishmentNumber VARCHAR(20) PRIMARY KEY, EnterpriseNumber VARCHAR(20),
-            StartDate VARCHAR(20), EntityNumber VARCHAR(20))""")
-        cur.execute("""CREATE TABLE kbo.denomination (
-            EntityNumber VARCHAR(20) PRIMARY KEY, Denomination VARCHAR(500), Type VARCHAR(10), Language VARCHAR(3))""")
-        cur.execute("""CREATE TABLE kbo.address (
-            EntityNumber VARCHAR(20), TypeOfAddress VARCHAR(20), Country VARCHAR(5),
-            ZipCode VARCHAR(20), Municipality VARCHAR(100), Street VARCHAR(500),
-            HouseNumber VARCHAR(20), Box VARCHAR(20), ExtraAddressInfo VARCHAR(500),
-            PRIMARY KEY (EntityNumber, TypeOfAddress))""")
-        cur.execute("""CREATE TABLE kbo.contact (
-            EntityNumber VARCHAR(20) PRIMARY KEY, Type VARCHAR(20), Value VARCHAR(500), Area VARCHAR(20), Language VARCHAR(3))""")
-        cur.execute("""CREATE TABLE kbo.activity (
-            EntityNumber VARCHAR(20), ActivityGroup VARCHAR(20), NaceVersion VARCHAR(10),
-            NaceCode VARCHAR(20), Classification VARCHAR(20),
-            PRIMARY KEY (EntityNumber, ActivityGroup, NaceVersion, NaceCode))""")
-        cur.execute("""CREATE TABLE kbo.branch (
-            Id SERIAL PRIMARY KEY, EnterpriseNumber VARCHAR(20), EstablishmentNumber VARCHAR(20), StartDate VARCHAR(20))""")
-        cur.execute("""CREATE TABLE kbo.code (
-            EntityNumber VARCHAR(20) PRIMARY KEY, Type VARCHAR(50), Code VARCHAR(50))""")
+        for sql in [
+            """CREATE TABLE kbo.enterprise (
+                EnterpriseNumber VARCHAR(20) PRIMARY KEY, Status VARCHAR(2),
+                JuridicalSituation VARCHAR(10), TypeOfEnterprise VARCHAR(3),
+                JuridicalForm VARCHAR(10), JuridicalFormCAC VARCHAR(10), StartDate VARCHAR(20))""",
+            """CREATE TABLE kbo.establishment (
+                EstablishmentNumber VARCHAR(20) PRIMARY KEY, EnterpriseNumber VARCHAR(20),
+                StartDate VARCHAR(20), EntityNumber VARCHAR(20))""",
+            """CREATE TABLE kbo.denomination (
+                EntityNumber VARCHAR(20) PRIMARY KEY, Denomination VARCHAR(500), Type VARCHAR(10), Language VARCHAR(3))""",
+            """CREATE TABLE kbo.address (
+                EntityNumber VARCHAR(20), TypeOfAddress VARCHAR(20), Country VARCHAR(5),
+                ZipCode VARCHAR(20), Municipality VARCHAR(100), Street VARCHAR(500),
+                HouseNumber VARCHAR(20), Box VARCHAR(20), ExtraAddressInfo VARCHAR(500),
+                PRIMARY KEY (EntityNumber, TypeOfAddress))""",
+            """CREATE TABLE kbo.contact (
+                EntityNumber VARCHAR(20) PRIMARY KEY, Type VARCHAR(20), Value VARCHAR(500), Area VARCHAR(20), Language VARCHAR(3))""",
+            """CREATE TABLE kbo.activity (
+                EntityNumber VARCHAR(20), ActivityGroup VARCHAR(20), NaceVersion VARCHAR(10),
+                NaceCode VARCHAR(20), Classification VARCHAR(20),
+                PRIMARY KEY (EntityNumber, ActivityGroup, NaceVersion, NaceCode))""",
+            """CREATE TABLE kbo.branch (
+                Id SERIAL PRIMARY KEY, EnterpriseNumber VARCHAR(20), EstablishmentNumber VARCHAR(20), StartDate VARCHAR(20))""",
+            """CREATE TABLE kbo.code (
+                EntityNumber VARCHAR(20) PRIMARY KEY, Type VARCHAR(50), Code VARCHAR(50))"""
+        ]:
+            cur.execute(sql)
     conn.commit()
     conn.close()
     return dbname
 
 
 def load_csv(conn, csv_path, table):
-    """Load CSV into table using COPY - fast bulk load."""
     with open(csv_path, 'r', encoding='latin-1', errors='replace') as f:
         with conn.cursor() as cur:
             cur.copy_expert(f"COPY {table} FROM STDIN WITH (FORMAT CSV, HEADER, DELIMITER E'\\t', NULL '')", f)
@@ -211,7 +200,6 @@ def load_csv(conn, csv_path, table):
 
 
 def load_extract(extract_path, label):
-    """Load all CSVs from extract into versioned database."""
     dbname = get_version_db(label)
     state_conn = get_conn(MASTER_DB)
 
@@ -261,7 +249,6 @@ def load_extract(extract_path, label):
 
 
 def merge_extract(label):
-    """Merge using COPY-based approach for speed."""
     dbname = get_version_db(label)
     master_conn = get_conn(MASTER_DB)
     version_conn = get_conn(dbname)
@@ -288,7 +275,6 @@ def merge_extract(label):
             date_cols = DATE_TABLE_COLUMNS.get(table_name, [])
             logger.info(f"Merging {master_table}...")
             
-            # Get columns from version table
             with version_conn.cursor() as cur:
                 schema, tbl = version_table.split('.')
                 cur.execute("""SELECT column_name FROM information_schema.columns 
@@ -299,7 +285,6 @@ def merge_extract(label):
                 logger.warning(f"No columns found for {version_table}")
                 continue
 
-            # Get counts before
             with master_conn.cursor() as cur:
                 cur.execute(f"SELECT COUNT(*) FROM {master_table}")
                 master_before = cur.fetchone()[0]
@@ -310,7 +295,6 @@ def merge_extract(label):
 
             logger.info(f"  Source: {version_total:,} rows, Master before: {master_before:,}")
 
-            # Export source to temp CSV file with date parsing
             temp_file = f'/tmp/{staging_table}.csv'
             col_list = ', '.join(cols)
             
@@ -319,11 +303,9 @@ def merge_extract(label):
                 rows = cur.fetchall()
                 
                 with open(temp_file, 'w', encoding='utf-8', errors='replace') as f:
-                    # Write header
                     f.write(','.join([f'"{c}"' for c in cols]) + '\n')
                     
                     for row in rows:
-                        # Parse dates
                         parsed_row = []
                         for col, val in zip(cols, row):
                             if col in date_cols:
@@ -332,46 +314,31 @@ def merge_extract(label):
                             else:
                                 parsed_row.append(val)
                         
-                        # Escape values
-                        escaped = []
-                        for v in parsed_row:
-                            if v is None:
-                                escaped.append('')
-                            elif isinstance(v, str):
-                                escaped.append(f'"{v.replace("\"", "\"\"")}"')
-                            else:
-                                escaped.append(str(v))
+                        escaped = [escape_csv_value(v) for v in parsed_row]
                         f.write(','.join(escaped) + '\n')
 
             logger.info(f"  Exported to {temp_file}")
 
-            # Create staging table
             with master_conn.cursor() as cur:
                 cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
-                col_defs = []
-                for c in cols:
-                    col_defs.append(f'"{c}" TEXT')
+                col_defs = [f'"{c}" TEXT' for c in cols]
                 cur.execute(f"CREATE TABLE {staging_table} ({', '.join(col_defs)})")
             master_conn.commit()
 
-            # COPY into staging table
             logger.info(f"  Loading into staging...")
             with open(temp_file, 'r', encoding='utf-8', errors='replace') as f:
                 with master_conn.cursor() as cur:
                     cur.copy_expert(f"COPY {staging_table} FROM STDIN WITH (FORMAT CSV, HEADER, DELIMITER ',', NULL '')", f)
             master_conn.commit()
 
-            # Get staging count
             with master_conn.cursor() as cur:
                 cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
                 staging_count = cur.fetchone()[0]
             logger.info(f"  Staging: {staging_count:,} rows")
 
-            # Build merge SQL with proper casting for dates
             pk_str = ", ".join([f'"{p}"' for p in pkeys])
             non_pk = [c for c in cols if c not in pkeys]
             
-            # Build SELECT with proper casting for date columns
             select_cols = []
             for c in cols:
                 if c in date_cols:
@@ -382,7 +349,6 @@ def merge_extract(label):
             
             update_set = ', '.join([f'"{c}"=EXCLUDED."{c}"' for c in non_pk]) if non_pk else '"nothing"=1'
             
-            # INSERT...SELECT with ON CONFLICT
             merge_sql = f"""INSERT INTO {master_table} ({', '.join([f'"{c}"' for c in cols])})
                 SELECT {select_list} FROM {staging_table}
                 ON CONFLICT ({pk_str}) DO UPDATE SET {update_set}"""
@@ -400,13 +366,11 @@ def merge_extract(label):
             inserts = max(0, master_after - master_before)
             updates = staging_count - inserts
             
-            # Cleanup
             with master_conn.cursor() as cur:
                 cur.execute(f"DROP TABLE {staging_table}")
             master_conn.commit()
             os.remove(temp_file)
 
-            # Record metrics
             with master_conn.cursor() as cur:
                 if inserts > 0:
                     cur.execute("""INSERT INTO public.pipeline_metrics 
@@ -449,7 +413,6 @@ def merge_extract(label):
 
 
 def show_status():
-    """Display current pipeline status and metrics."""
     conn = get_conn(MASTER_DB)
     print("\n" + "="*70)
     print("PIPELINE STATUS")
