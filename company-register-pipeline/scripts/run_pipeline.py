@@ -25,6 +25,9 @@ MASTER_DB = 'BE KBO MASTER'
 # Batch size: smaller batches = faster commits, better progress tracking
 BATCH_SIZE = 1000
 
+# Date columns that need parsing from DD-MM-YYYY to YYYY-MM-DD
+DATE_COLUMNS = {'startdate', 'StartDate'}
+
 TABLES = [
     ("Enterprise.csv", "kbo_master.enterprise", "kbo.enterprise", ["EnterpriseNumber"]),
     ("Establishment.csv", "kbo_master.establishment", "kbo.establishment", ["EstablishmentNumber"]),
@@ -39,6 +42,31 @@ TABLES = [
 
 def get_conn(db):
     return psycopg2.connect(host=DB_HOST, port=DB_PORT, database=db, user=DB_USER, password=DB_PASSWORD)
+
+
+def parse_date(value):
+    """Parse date from DD-MM-YYYY to YYYY-MM-DD format."""
+    if value is None or value == '':
+        return None
+    if isinstance(value, str) and '-' in value:
+        try:
+            # Try DD-MM-YYYY format
+            dt = datetime.strptime(value, '%d-%m-%Y')
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+    return value
+
+
+def parse_row(row, columns):
+    """Parse a row, converting date columns as needed."""
+    result = []
+    for i, (col, val) in enumerate(zip(columns, row)):
+        if col.lower() in DATE_COLUMNS:
+            result.append(parse_date(val))
+        else:
+            result.append(val)
+    return tuple(result)
 
 
 def init_master():
@@ -279,6 +307,9 @@ def merge_extract(label):
                 if not batch:
                     break
 
+                # Parse dates in batch
+                parsed_batch = [parse_row(row, cols) for row in batch]
+
                 # Get master count before this batch
                 with master_conn.cursor() as cur:
                     cur.execute(f"SELECT COUNT(*) FROM {master_table}")
@@ -286,7 +317,7 @@ def merge_extract(label):
 
                 # Execute batch with its own transaction
                 master_cur = master_conn.cursor()
-                master_cur.executemany(merge_sql, batch)
+                master_cur.executemany(merge_sql, parsed_batch)
                 master_conn.commit()
 
                 # Get master count after this batch
