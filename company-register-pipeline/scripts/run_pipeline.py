@@ -98,7 +98,9 @@ def init_master():
         cur.execute("""CREATE TABLE IF NOT EXISTS public.pipeline_metrics (
             id SERIAL PRIMARY KEY, extract_version VARCHAR(50) NOT NULL,
             table_name VARCHAR(50) NOT NULL, operation VARCHAR(20) NOT NULL,
-            rows_count BIGINT NOT NULL, recorded_at TIMESTAMP DEFAULT NOW())""")
+            rows_count BIGINT NOT NULL, rows_inserted BIGINT DEFAULT 0,
+            rows_updated BIGINT DEFAULT 0, status VARCHAR(20) DEFAULT 'completed',
+            recorded_at TIMESTAMP DEFAULT NOW())""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_state_version ON public.pipeline_state(extract_version)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_metrics_version ON public.pipeline_metrics(extract_version, table_name)")
     conn.commit()
@@ -186,18 +188,38 @@ def load_extract(extract_path, label):
         total = 0
         for csv_file, master_table, version_table in TABLES:
             csv_path = os.path.join(extract_path, csv_file)
+            table_name = version_table.split('.')[1]
             if not os.path.exists(csv_path):
                 logger.warning(f"CSV not found: {csv_path}, skipping")
+                with state_conn.cursor() as cur:
+                    cur.execute("""INSERT INTO public.pipeline_metrics 
+                        (extract_version, table_name, operation, rows_count, rows_inserted, rows_updated, status)
+                        VALUES (%s, %s, 'LOAD', 0, 0, 0, 'skipped')""", (label, table_name))
+                state_conn.commit()
                 continue
-            logger.info(f"Loading {csv_file}...")
-            conn = get_conn(dbname)
-            load_csv(conn, csv_path, version_table)
-            with conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM {version_table}")
-                cnt = cur.fetchone()[0]
-            conn.close()
-            logger.info(f"  -> {cnt:,} rows")
-            total += cnt
+            try:
+                logger.info(f"Loading {csv_file}...")
+                conn = get_conn(dbname)
+                load_csv(conn, csv_path, version_table)
+                with conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {version_table}")
+                    cnt = cur.fetchone()[0]
+                conn.close()
+                logger.info(f"  -> {cnt:,} rows")
+                total += cnt
+                with state_conn.cursor() as cur:
+                    cur.execute("""INSERT INTO public.pipeline_metrics 
+                        (extract_version, table_name, operation, rows_count, rows_inserted, rows_updated, status)
+                        VALUES (%s, %s, 'LOAD', %s, %s, 0, 'completed')""", 
+                        (label, table_name, cnt, cnt))
+                state_conn.commit()
+            except Exception as e:
+                logger.error(f"  Failed to load {csv_file}: {e}")
+                with state_conn.cursor() as cur:
+                    cur.execute("""INSERT INTO public.pipeline_metrics 
+                        (extract_version, table_name, operation, rows_count, rows_inserted, rows_updated, status)
+                        VALUES (%s, %s, 'LOAD', 0, 0, 0, 'failed')""", (label, table_name))
+                state_conn.commit()
 
         with state_conn.cursor() as cur:
             cur.execute("UPDATE public.pipeline_state SET status = 'loaded', load_completed_at = NOW(), records_loaded = %s WHERE extract_version = %s", (total, label))
@@ -325,11 +347,14 @@ def merge_extract(label):
                 cur.execute(f"SELECT COUNT(*) FROM {master_table}")
                 master_after = cur.fetchone()[0]
 
-            # Record metrics (total operations = source_count)
+            # Record metrics with rows_inserted vs rows_updated
+            rows_inserted = inserted - deleted if inserted > deleted else 0
+            rows_updated = deleted
             with master_conn.cursor() as cur:
                 cur.execute("""INSERT INTO public.pipeline_metrics 
-                    (extract_version, table_name, operation, rows_count) 
-                    VALUES (%s, %s, 'MERGED', %s)""", (label, table_name, source_count))
+                    (extract_version, table_name, operation, rows_count, rows_inserted, rows_updated, status) 
+                    VALUES (%s, %s, 'MERGED', %s, %s, %s, 'completed')""", 
+                    (label, table_name, source_count, rows_inserted, rows_updated))
             master_conn.commit()
 
             logger.info(f"  {master_table}: {source_count:,} merged ({deleted:,} replaced, {inserted:,} new net)")
