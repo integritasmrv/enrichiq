@@ -255,7 +255,7 @@ class MonitoringDB:
         with self.connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT 
+                    SELECT
                         run_id,
                         pipeline_name,
                         pipeline_version,
@@ -274,8 +274,28 @@ class MonitoringDB:
                         created_at,
                         updated_at,
                         EXTRACT(EPOCH FROM (updated_at - started_at))/60 as duration_minutes
-                    FROM pipeline_runs 
+                    FROM pipeline_runs
                     ORDER BY created_at DESC
                     LIMIT 50
+                """)
+                return [dict(row) for row in cur.fetchall()]
+
+    def get_all_metrics_summary(self) -> List[Dict]:
+        """Get summary of all pipeline metrics for dashboard."""
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        extract_version,
+                        table_name,
+                        operation,
+                        rows_count,
+                        rows_inserted,
+                        rows_updated,
+                        status,
+                        recorded_at
+                    FROM public.pipeline_metrics
+                    ORDER BY recorded_at DESC
+                    LIMIT 100
                 """)
                 return [dict(row) for row in cur.fetchall()]

@@ -18,13 +18,15 @@ HTML_TEMPLATE = '''
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
         h1 { color: #333; }
+        h2 { color: #555; margin-top: 30px; }
         .status-planned { background: #fee; }
         .status-running { background: #efe; }
         .status-completed { background: #cfc; }
         .status-failed { background: #fcc; }
         .status-stopped { background: #ccc; }
         .status-paused { background: #ffec8b; }
-        table { border-collapse: collapse; width: 100%; background: white; }
+        .status-skipped { background: #e5e5e5; }
+        table { border-collapse: collapse; width: 100%; background: white; margin-bottom: 20px; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
         th { background: #4CAF50; color: white; }
         tr:hover { background: #f5f5f5; }
@@ -32,11 +34,16 @@ HTML_TEMPLATE = '''
         .progress-bg { background: #ddd; height: 20px; border-radius: 4px; width: 100px; }
         .btn { padding: 5px 10px; margin: 2px; cursor: pointer; }
         .error { color: red; }
+        .metric-inserted { color: #2e7d32; font-weight: bold; }
+        .metric-updated { color: #1565c0; font-weight: bold; }
+        .metric-failed { color: #c62828; }
+        .metric-skipped { color: #757575; }
     </style>
 </head>
 <body>
     <h1>Pipeline Monitor</h1>
     <p>Last updated: {{ last_update }}</p>
+    <h2>Pipeline Runs</h2>
     <table>
         <tr>
             <th>Pipeline</th>
@@ -84,6 +91,31 @@ HTML_TEMPLATE = '''
         </tr>
         {% endfor %}
     </table>
+    <h2>Pipeline Metrics</h2>
+    <table>
+        <tr>
+            <th>Extract Version</th>
+            <th>Table</th>
+            <th>Operation</th>
+            <th>Total Rows</th>
+            <th>Inserted</th>
+            <th>Updated</th>
+            <th>Status</th>
+            <th>Recorded At</th>
+        </tr>
+        {% for metric in metrics %}
+        <tr>
+            <td>{{ metric.extract_version }}</td>
+            <td>{{ metric.table_name }}</td>
+            <td>{{ metric.operation }}</td>
+            <td>{{ metric.rows_count|default(0)|int|format(',') }}</td>
+            <td class="metric-inserted">{{ metric.rows_inserted|default(0)|int|format(',') }}</td>
+            <td class="metric-updated">{{ metric.rows_updated|default(0)|int|format(',') }}</td>
+            <td class="metric-{{ metric.status }}">{{ metric.status }}</td>
+            <td>{{ metric.recorded_at }}</td>
+        </tr>
+        {% endfor %}
+    </table>
     <h2>Summary</h2>
     <ul>
         <li>Planned: {{ status_counts.planned|default(0) }}</li>
@@ -101,16 +133,18 @@ HTML_TEMPLATE = '''
 def index():
     db = MonitoringDB()
     runs = db.get_all_runs_summary()
+    metrics = db.get_all_metrics_summary()
     db.close()
-    
+
     status_counts = {}
     for run in runs:
         status = run.get('status', 'unknown')
         status_counts[status] = status_counts.get(status, 0) + 1
-    
+
     return render_template_string(
         HTML_TEMPLATE,
         runs=runs,
+        metrics=metrics,
         status_counts=status_counts,
         last_update=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     )
