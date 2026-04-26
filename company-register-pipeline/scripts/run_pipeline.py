@@ -373,7 +373,7 @@ def merge_extract(label):
 
             logger.info(f"  Exported to {temp_file}")
 
-            # Create temp table in master
+            # Create staging table in master
             staging_table = f'kbo_merge_staging_{table_name}'
             with master_conn.cursor() as cur:
                 cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
@@ -388,64 +388,90 @@ def merge_extract(label):
             master_conn.commit()
             os.remove(temp_file)
 
-            # Get staging count
             with master_conn.cursor() as cur:
                 cur.execute(f"SELECT COUNT(*) FROM {staging_table}")
                 staging_count = cur.fetchone()[0]
             logger.info(f"  Staged: {staging_count:,}")
 
-            # Create index on staging for fast DELETE lookup
-            if pkeys:
-                idx_cols = ','.join([f'col{i}' for i in range(len(src_cols))])
-                idx_name = f'idx_{staging_table}_merge'
+            # Fast merge: if master empty, just INSERT; otherwise use swap approach
+            if master_before == 0:
+                col_list = ', '.join([f'col{i}' for i in range(len(src_cols))])
                 with master_conn.cursor() as cur:
-                    cur.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {staging_table} ({idx_cols})")
+                    cur.execute(f"INSERT INTO {master_table} SELECT {col_list} FROM {staging_table}")
+                    inserted = cur.rowcount
                 master_conn.commit()
-                logger.info(f"  Index created on staging")
-
-            # Build DELETE + INSERT
-            if pkeys:
-                # Map version column name (CamelCase) -> master column position
-                pk_master_cols = [COL_MAP.get(pk, pk).lower() for pk in pkeys if pk in src_cols or COL_MAP.get(pk) is not None]
-                # Find position of each PK column in src_cols for staging reference
-                pk_idx_in_staging = [src_cols.index(pk) if pk in src_cols else src_cols.index(next(k for k, v in COL_MAP.items() if v == pk.lower()))
-                    for pk in pkeys]
-                where_parts = [f"m.{pk_master_cols[i]} = s.col{pk_idx_in_staging[i]}" for i in range(len(pkeys))]
-                where_clause = ' AND '.join(where_parts)
-                
-                # Delete matching from master
-                with master_conn.cursor() as cur:
-                    cur.execute(f"""
-                        DELETE FROM {master_table} m
-                        WHERE EXISTS (SELECT 1 FROM {staging_table} s WHERE {where_clause})
-                    """)
-                    deleted = cur.rowcount
-                master_conn.commit()
-                logger.info(f"  Deleted: {deleted:,}")
-            else:
                 deleted = 0
+                logger.info(f"  Inserted: {inserted:,}")
+            else:
+                # Build master column list from staging
+                master_col_names = [COL_MAP.get(c.lower(), c).lower() for c in src_cols]
+                master_col_list = ', '.join(master_col_names)
+                staging_col_list = ', '.join([f'col{i}' for i in range(len(src_cols))])
 
-            # Insert all from staging
-            col_list = ', '.join([f'col{i}' for i in range(len(src_cols))])
+                # Build PK columns for the swap table
+                pk_master_cols = []
+                for pk in pkeys:
+                    mpk = COL_MAP.get(pk, pk).lower()
+                    if mpk not in pk_master_cols:
+                        pk_master_cols.append(mpk)
+                pk_col_str = ', '.join(pk_master_cols)
+
+                swap_table = f'{master_table.split(".")[1]}_swap'
+                
+                # Create swap table from staging with dedup
+                with master_conn.cursor() as cur:
+                    cur.execute(f"DROP TABLE IF EXISTS {swap_table}")
+                    cur.execute(f"CREATE UNLOGGED TABLE {swap_table} AS SELECT DISTINCT ON ({staging_col_list}) {staging_col_list} FROM {staging_table}")
+                master_conn.commit()
+                
+                with master_conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {swap_table}")
+                    swap_count = cur.fetchone()[0]
+                
+                # Add master rows not in staging using ON CONFLICT (fast via PK)
+                if pk_master_cols:
+                    with master_conn.cursor() as cur:
+                        cur.execute(f"ALTER TABLE {swap_table} ADD PRIMARY KEY ({pk_col_str})")
+                    master_conn.commit()
+                    
+                    with master_conn.cursor() as cur:
+                        cur.execute(f"INSERT INTO {swap_table} SELECT * FROM {master_table} ON CONFLICT ({pk_col_str}) DO NOTHING")
+                        avoid_dup_count = cur.rowcount
+                    master_conn.commit()
+                    deleted = master_before - avoid_dup_count if avoid_dup_count > 0 else 0
+                else:
+                    deleted = 0
+                    with master_conn.cursor() as cur:
+                        cur.execute(f"INSERT INTO {swap_table} SELECT * FROM {master_table}")
+                    master_conn.commit()
+
+                # Swap tables
+                with master_conn.cursor() as cur:
+                    cur.execute(f"ALTER TABLE {swap_table} SET LOGGED")
+                    cur.execute(f"DROP TABLE IF EXISTS {master_table}_old")
+                    cur.execute(f"ALTER TABLE {master_table} RENAME TO {master_table.split('.')[1]}_old")
+                    cur.execute(f"ALTER TABLE {swap_table} RENAME TO {master_table.split('.')[1]}")
+                    cur.execute(f"DROP TABLE IF EXISTS {master_table.split('.')[1]}_old")
+                master_conn.commit()
+                
+                with master_conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {master_table}")
+                    inserted = cur.rowcount
+                
+                logger.info(f"  Swapped: {swap_count:,} from staging + {master_before - deleted if deleted else master_before:,} kept = {swap_count + master_before - deleted if deleted else swap_count + master_before:,}")
+
+            # Cleanup staging
             with master_conn.cursor() as cur:
-                cur.execute(f"INSERT INTO {master_table} SELECT {col_list} FROM {staging_table}")
-                inserted = cur.rowcount
+                cur.execute(f"DROP TABLE IF EXISTS {staging_table}")
             master_conn.commit()
-            logger.info(f"  Inserted: {inserted:,}")
-
-            # Cleanup
-            with master_conn.cursor() as cur:
-                cur.execute(f"DROP TABLE {staging_table}")
-            master_conn.commit()
-
-            # Get final count
-            with master_conn.cursor() as cur:
-                cur.execute(f"SELECT COUNT(*) FROM {master_table}")
-                master_after = cur.fetchone()[0]
 
             # Record metrics with rows_inserted vs rows_updated
-            rows_inserted = inserted - deleted if inserted > deleted else 0
-            rows_updated = deleted
+            if master_before == 0:
+                rows_inserted = source_count
+                rows_updated = 0
+            else:
+                rows_inserted = source_count  # all staging rows are added/replaced
+                rows_updated = deleted if deleted else 0
             with metrics_conn.cursor() as cur:
                 cur.execute("""INSERT INTO public.pipeline_metrics 
                     (extract_version, table_name, operation, rows_count, rows_inserted, rows_updated, status) 
@@ -453,7 +479,7 @@ def merge_extract(label):
                     (label, table_name, source_count, rows_inserted, rows_updated))
             metrics_conn.commit()
 
-            logger.info(f"  {master_table}: {source_count:,} merged ({deleted:,} replaced, {inserted:,} new net)")
+            logger.info(f"  {master_table}: {source_count:,} merged ({rows_updated:,} updated, {rows_inserted:,} total)")
             total_ops += source_count
 
         with metrics_conn.cursor() as cur:
