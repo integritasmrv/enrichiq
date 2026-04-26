@@ -539,10 +539,27 @@ if __name__ == "__main__":
 
         init_master()
 
+        # Create pipeline run record for dashboard
+        run_conn = get_conn(METRICS_DB)
+        with run_conn.cursor() as cur:
+            cur.execute("""INSERT INTO pipeline_runs (pipeline_name, pipeline_version, source_type, run_type, status, total_files)
+                VALUES ('kbo_pipeline', %s, 'KBO', 'initial', 'running', 8)
+                ON CONFLICT DO NOTHING""", (label,))
+            cur.execute("UPDATE pipeline_runs SET status='running', started_at=NOW() WHERE pipeline_version=%s AND status='planned'", (label,))
+        run_conn.commit()
+        run_conn.close()
+
         if not merge_only:
             load_extract(extract_path, label)
 
         if not load_only:
             merge_extract(label)
+
+        # Mark run as completed
+        run_conn = get_conn(METRICS_DB)
+        with run_conn.cursor() as cur:
+            cur.execute("UPDATE pipeline_runs SET status='completed', finished_at=NOW(), processed_files=8, processed_items=(SELECT SUM(rows_count) FROM pipeline_metrics WHERE extract_version=%s AND operation='MERGED') WHERE pipeline_version=%s", (label, label))
+        run_conn.commit()
+        run_conn.close()
 
         show_status()
