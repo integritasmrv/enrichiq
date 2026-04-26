@@ -551,10 +551,19 @@ if __name__ == "__main__":
         # Create pipeline run record for dashboard
         run_conn = get_conn(METRICS_DB)
         with run_conn.cursor() as cur:
-            cur.execute("""INSERT INTO pipeline_runs (pipeline_name, pipeline_version, source_type, run_type, status, total_files)
-                VALUES ('kbo_pipeline', %s, 'KBO', 'initial', 'running', 8)
+            cur.execute("""INSERT INTO pipeline_runs (pipeline_name, pipeline_version, source_type, run_type, status, total_files, total_items)
+                VALUES ('kbo_pipeline', %s, 'KBO', 'initial', 'running', 8, 0)
                 ON CONFLICT DO NOTHING""", (label,))
             cur.execute("UPDATE pipeline_runs SET status='running', started_at=NOW() WHERE pipeline_version=%s AND status='planned'", (label,))
+            # Create per-file items upfront
+            cur.execute("SELECT run_id FROM pipeline_runs WHERE pipeline_version=%s", (label,))
+            run_id = cur.fetchone()
+            if run_id:
+                for csv_file, master_table, version_table in TABLES:
+                    tbl = master_table.split('.')[1]
+                    cur.execute("""INSERT INTO pipeline_run_items (run_id, item_type, source_path, table_name, status, total_items)
+                        VALUES (%s, 'file', %s, %s, 'pending', 0) ON CONFLICT DO NOTHING""",
+                        (run_id[0], f'{csv_file}', tbl))
         run_conn.commit()
         run_conn.close()
 
@@ -564,10 +573,29 @@ if __name__ == "__main__":
         if not load_only:
             merge_extract(label)
 
-        # Mark run as completed
+        # Mark run as completed and update progress
         run_conn = get_conn(METRICS_DB)
         with run_conn.cursor() as cur:
-            cur.execute("UPDATE pipeline_runs SET status='completed', finished_at=NOW(), processed_files=8, processed_items=(SELECT SUM(rows_count) FROM pipeline_metrics WHERE extract_version=%s AND operation='MERGED') WHERE pipeline_version=%s", (label, label))
+            cur.execute("""UPDATE pipeline_runs SET 
+                status = CASE WHEN (SELECT COUNT(*) FROM pipeline_state WHERE extract_version=%s AND status='merged') > 0 THEN 'completed' ELSE 'failed' END,
+                finished_at = NOW(),
+                total_items = (SELECT COALESCE(SUM(rows_count),0) FROM pipeline_metrics WHERE extract_version=%s AND operation='LOAD'),
+                processed_items = (SELECT COALESCE(SUM(rows_count),0) FROM pipeline_metrics WHERE extract_version=%s AND operation='MERGED'),
+                processed_files = (SELECT COUNT(*) FROM pipeline_metrics WHERE extract_version=%s AND operation='MERGED' AND status='completed'),
+                progress_percent = CASE WHEN (SELECT SUM(rows_count) FROM pipeline_metrics WHERE extract_version=%s AND operation='LOAD') > 0
+                    THEN ROUND(((SELECT COALESCE(SUM(rows_count),0) FROM pipeline_metrics WHERE extract_version=%s AND operation='MERGED')::DECIMAL / NULLIF((SELECT SUM(rows_count) FROM pipeline_metrics WHERE extract_version=%s AND operation='LOAD'),0)) * 100, 2) ELSE 0 END
+                WHERE pipeline_version=%s""",
+                (label, label, label, label, label, label, label, label))
+            # Update per-file item status
+            cur.execute("""UPDATE pipeline_run_items i SET
+                status = COALESCE((SELECT CASE WHEN m.status='completed' THEN 'completed' WHEN m.rows_count>0 THEN 'loaded' ELSE 'pending' END
+                    FROM pipeline_metrics m WHERE m.extract_version=%s AND m.table_name=i.table_name AND m.operation='MERGED'), 
+                    (SELECT CASE WHEN m.status='completed' THEN 'loaded' WHEN m.rows_count>0 THEN 'loaded' ELSE 'pending' END
+                    FROM pipeline_metrics m WHERE m.extract_version=%s AND m.table_name=i.table_name AND m.operation='LOAD'), 'pending'),
+                total_items = COALESCE((SELECT SUM(m.rows_count) FROM pipeline_metrics m WHERE m.extract_version=%s AND m.table_name=i.table_name AND m.operation='LOAD'), 0),
+                processed_items = COALESCE((SELECT SUM(m.rows_count) FROM pipeline_metrics m WHERE m.extract_version=%s AND m.table_name=i.table_name AND m.operation='MERGED'), 0)
+                WHERE i.run_id IN (SELECT run_id FROM pipeline_runs WHERE pipeline_version=%s)""",
+                (label, label, label, label, label))
         run_conn.commit()
         run_conn.close()
 
