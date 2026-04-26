@@ -128,6 +128,12 @@ def init_master():
 
     metrics_conn = get_conn(METRICS_DB)
     with metrics_conn.cursor() as cur:
+        cur.execute("""CREATE TABLE IF NOT EXISTS pipeline_definitions (
+            definition_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            pipeline_name VARCHAR(100) NOT NULL UNIQUE, description TEXT,
+            source_type VARCHAR(50) NOT NULL, run_type VARCHAR(30) DEFAULT 'initial',
+            default_batch_size INT DEFAULT 50, config JSONB DEFAULT '{}',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
         cur.execute("""CREATE TABLE IF NOT EXISTS pipeline_state (
             id SERIAL PRIMARY KEY, extract_version VARCHAR(50) UNIQUE NOT NULL,
             status VARCHAR(20) DEFAULT 'pending', load_started_at TIMESTAMP,
@@ -161,6 +167,11 @@ def init_master():
             processed_items BIGINT DEFAULT 0, pagination_state JSONB DEFAULT '{}',
             started_at TIMESTAMP, finished_at TIMESTAMP, error_message TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS pipeline_run_commands (
+            command_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            run_id UUID REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+            command VARCHAR(20) NOT NULL, issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            executed_at TIMESTAMP, executed BOOLEAN DEFAULT FALSE)""")
     metrics_conn.commit()
     metrics_conn.close()
     logger.info("Master and metrics databases initialized.")
