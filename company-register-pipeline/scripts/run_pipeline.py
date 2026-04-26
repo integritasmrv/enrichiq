@@ -426,9 +426,11 @@ def merge_extract(label):
                     cur.execute(f"CREATE TABLE {swap_full} (LIKE {master_table})")
                 master_conn.commit()
                 
-                # Insert from staging deduplicated on PK
+                # Dedup: compute staging columns that map to PK
+                pk_staging_cols = ', '.join([f'col{src_cols.index(next(k for k, v in COL_MAP.items() if v == mpk))}' for mpk in pk_master_cols]) if pk_master_cols else staging_col_list
+                
                 with master_conn.cursor() as cur:
-                    cur.execute(f"INSERT INTO {swap_full} ({master_col_list}) SELECT DISTINCT ON ({staging_col_list}) {staging_col_list} FROM {staging_table}")
+                    cur.execute(f"INSERT INTO {swap_full} ({master_col_list}) SELECT DISTINCT ON ({pk_staging_cols}) {staging_col_list} FROM {staging_table}")
                     swap_count = cur.rowcount if cur.rowcount != -1 else 0
                 master_conn.commit()
                 
