@@ -420,20 +420,24 @@ def merge_extract(label):
                 swap_table = f'{table_name}_swap'
                 swap_full = f'{schema_name}.{swap_table}' if schema_name else swap_table
                 
-                # Create swap table with proper master column names (aliased from staging), dedup on PK
-                # Use PK columns for DISTINCT ON to ensure uniqueness
-                pk_staging_list = ', '.join([f'col{src_cols.index(next(k for k, v in COL_MAP.items() if v == mpk))}' for mpk in pk_master_cols]) if pk_master_cols else staging_col_list
-                col_aliases = ', '.join([f'col{i} as {master_col_names[i]}' for i in range(len(master_col_names))])
+                # Build swap table: first insert all from staging (deduped), then add old master rows
                 with master_conn.cursor() as cur:
                     cur.execute(f"DROP TABLE IF EXISTS {swap_full}")
-                    cur.execute(f"CREATE UNLOGGED TABLE {swap_full} AS SELECT DISTINCT ON ({pk_staging_list}) {col_aliases} FROM {staging_table}")
+                    cur.execute(f"CREATE TABLE {swap_full} (LIKE {master_table})")
                 master_conn.commit()
                 
+                # Insert from staging deduplicated on PK
                 with master_conn.cursor() as cur:
-                    cur.execute(f"SELECT COUNT(*) FROM {swap_full}")
-                    swap_count = cur.fetchone()[0]
+                    cur.execute(f"INSERT INTO {swap_full} ({master_col_list}) SELECT DISTINCT ON ({staging_col_list}) {staging_col_list} FROM {staging_table}")
+                    swap_count = cur.rowcount if cur.rowcount != -1 else 0
+                master_conn.commit()
                 
-                # Add master rows not in staging using ON CONFLICT (fast via PK)
+                if swap_count == 0:
+                    with master_conn.cursor() as cur:
+                        cur.execute(f"SELECT COUNT(*) FROM {swap_full}")
+                        swap_count = cur.fetchone()[0]
+                
+                # Add PK and old master rows
                 if pk_master_cols:
                     with master_conn.cursor() as cur:
                         cur.execute(f"ALTER TABLE {swap_full} ADD PRIMARY KEY ({pk_col_str})")
@@ -441,7 +445,7 @@ def merge_extract(label):
                     
                     with master_conn.cursor() as cur:
                         cur.execute(f"INSERT INTO {swap_full} SELECT * FROM {master_table} ON CONFLICT ({pk_col_str}) DO NOTHING")
-                        avoid_dup_count = cur.rowcount
+                        avoid_dup_count = cur.rowcount if cur.rowcount > 0 else 0
                     master_conn.commit()
                     deleted = master_before - avoid_dup_count if avoid_dup_count > 0 else 0
                 else:
@@ -462,9 +466,13 @@ def merge_extract(label):
                 
                 with master_conn.cursor() as cur:
                     cur.execute(f"SELECT COUNT(*) FROM {master_table}")
+                    final_count = cur.fetchone()[0]
+                
+                with master_conn.cursor() as cur:
+                    cur.execute(f"SELECT COUNT(*) FROM {master_table}")
                     inserted = cur.rowcount
                 
-                logger.info(f"  Swapped: {swap_count:,} from staging + {master_before - deleted if deleted else master_before:,} kept = {swap_count + master_before - deleted if deleted else swap_count + master_before:,}")
+                logger.info(f"  Swapped: {swap_count:,} from staging + {avoid_dup_count if pk_master_cols else master_before:,} kept = {final_count:,}")
 
             # Cleanup staging
             with master_conn.cursor() as cur:
