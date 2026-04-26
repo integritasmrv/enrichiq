@@ -55,6 +55,7 @@ def init_master():
     try:
         with conn.cursor() as cur:
             cur.execute(f'CREATE DATABASE "{MASTER_DB}"')
+            cur.execute(f'CREATE DATABASE "{METRICS_DB}"')
     except psycopg2.errors.DuplicateDatabase:
         pass
     conn.close()
@@ -62,8 +63,6 @@ def init_master():
     conn = get_conn(MASTER_DB)
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo_master")
-        
-        # Create tables with lowercase columns
         cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.enterprise (
             enterprisenumber VARCHAR(20) PRIMARY KEY, status VARCHAR(2),
             juridicalsituation VARCHAR(10), typeofenterprise VARCHAR(3),
@@ -90,7 +89,45 @@ def init_master():
             entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(50), code VARCHAR(50))""")
     conn.commit()
     conn.close()
-    logger.info("Master database initialized.")
+
+    metrics_conn = get_conn(METRICS_DB)
+    with metrics_conn.cursor() as cur:
+        cur.execute("""CREATE TABLE IF NOT EXISTS pipeline_state (
+            id SERIAL PRIMARY KEY, extract_version VARCHAR(50) UNIQUE NOT NULL,
+            status VARCHAR(20) DEFAULT 'pending', load_started_at TIMESTAMP,
+            load_completed_at TIMESTAMP, merge_started_at TIMESTAMP,
+            merge_completed_at TIMESTAMP, records_loaded BIGINT, records_merged BIGINT,
+            error_message TEXT, created_at TIMESTAMP DEFAULT NOW())""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS pipeline_metrics (
+            id SERIAL PRIMARY KEY, extract_version VARCHAR(50) NOT NULL,
+            table_name VARCHAR(50) NOT NULL, operation VARCHAR(20) NOT NULL,
+            rows_count BIGINT NOT NULL, rows_inserted BIGINT DEFAULT 0,
+            rows_updated BIGINT DEFAULT 0, status VARCHAR(20) DEFAULT 'completed',
+            recorded_at TIMESTAMP DEFAULT NOW())""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS pipeline_runs (
+            run_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            pipeline_name VARCHAR(100) NOT NULL, pipeline_version VARCHAR(20) NOT NULL,
+            source_type VARCHAR(50) NOT NULL, run_type VARCHAR(30) NOT NULL DEFAULT 'initial',
+            status VARCHAR(20) NOT NULL DEFAULT 'planned', progress_percent DECIMAL(5,2) DEFAULT 0,
+            total_items BIGINT DEFAULT 0, processed_items BIGINT DEFAULT 0,
+            total_batches INT DEFAULT 0, processed_batches INT DEFAULT 0,
+            total_files INT DEFAULT 0, processed_files INT DEFAULT 0,
+            server_load_percent DECIMAL(5,2), batch_size INT DEFAULT 50,
+            source_config JSONB DEFAULT '{}', started_at TIMESTAMP, finished_at TIMESTAMP,
+            error_message TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+        cur.execute("""CREATE TABLE IF NOT EXISTS pipeline_run_items (
+            item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            run_id UUID REFERENCES pipeline_runs(run_id) ON DELETE CASCADE,
+            item_type VARCHAR(30) NOT NULL DEFAULT 'file', source_path VARCHAR(500),
+            table_name VARCHAR(100), status VARCHAR(20) NOT NULL DEFAULT 'pending',
+            progress_percent DECIMAL(5,2) DEFAULT 0, total_items BIGINT DEFAULT 0,
+            processed_items BIGINT DEFAULT 0, pagination_state JSONB DEFAULT '{}',
+            started_at TIMESTAMP, finished_at TIMESTAMP, error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""")
+    metrics_conn.commit()
+    metrics_conn.close()
+    logger.info("Master and metrics databases initialized.")
 
 
 def get_version_db(label):
