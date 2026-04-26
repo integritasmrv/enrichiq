@@ -34,18 +34,71 @@ TABLES = [
 
 VERSION_COLS = {
     'kbo.branch': 'EnterpriseNumber,EstablishmentNumber,StartDate',
-    'kbo.code': 'EntityNumber,Type,Code',
 }
+
+MASTER_SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS kbo_master.enterprise (
+        enterprisenumber VARCHAR(100) PRIMARY KEY, status VARCHAR(2),
+        juridicalsituation VARCHAR(10), typeofenterprise VARCHAR(3),
+        juridicalform VARCHAR(10), juridicalformcac VARCHAR(10), startdate VARCHAR(20))""",
+    """CREATE TABLE IF NOT EXISTS kbo_master.establishment (
+        establishmentnumber VARCHAR(100) PRIMARY KEY, startdate VARCHAR(20),
+        enterprisenumber VARCHAR(100))""",
+    """CREATE TABLE IF NOT EXISTS kbo_master.denomination (
+        entitynumber VARCHAR(100), language VARCHAR(3),
+        typeofdenomination VARCHAR(10), denomination VARCHAR(500))""",
+    """CREATE TABLE IF NOT EXISTS kbo_master.address (
+        entitynumber VARCHAR(100), typeofaddress VARCHAR(20),
+        countrynl VARCHAR(5), countryfr VARCHAR(5), zipcode VARCHAR(20),
+        municipalitynl VARCHAR(100), municipalityfr VARCHAR(100),
+        streetnl VARCHAR(500), streetfr VARCHAR(500),
+        housenumber VARCHAR(20), box VARCHAR(20),
+        extraaddressinfo VARCHAR(500), datestrikingoff VARCHAR(20))""",
+    """CREATE TABLE IF NOT EXISTS kbo_master.contact (
+        entitynumber VARCHAR(100), entitycontact VARCHAR(20),
+        contacttype VARCHAR(20), value VARCHAR(500))""",
+    """CREATE TABLE IF NOT EXISTS kbo_master.activity (
+        entitynumber VARCHAR(100), activitygroup VARCHAR(20),
+        naceversion VARCHAR(10), nacecode VARCHAR(20),
+        classification VARCHAR(20))""",
+    """CREATE TABLE IF NOT EXISTS kbo_master.branch (
+        id SERIAL PRIMARY KEY, enterprisenumber VARCHAR(100),
+        establishmentnumber VARCHAR(100), startdate VARCHAR(20))""",
+    """CREATE TABLE IF NOT EXISTS kbo_master.code (
+        category VARCHAR(50), code VARCHAR(50),
+        language VARCHAR(3), description VARCHAR(500))""",
+]
 
 PK_COLS = {
     'enterprise': ['enterprisenumber'],
     'establishment': ['establishmentnumber'],
-    'denomination': ['entitynumber'],
+    'denomination': ['entitynumber', 'language', 'typeofdenomination'],
     'address': ['entitynumber', 'typeofaddress'],
-    'contact': ['entitynumber'],
+    'contact': ['entitynumber', 'entitycontact', 'contacttype'],
     'activity': ['entitynumber', 'activitygroup', 'naceversion', 'nacecode'],
     'branch': ['establishmentnumber'],
-    'code': ['entitynumber'],
+    'code': ['category', 'code', 'language'],
+}
+
+# Mapping from version column name (CamelCase) -> master column name (lowercase)
+COL_MAP = {
+    'EnterpriseNumber': 'enterprisenumber', 'Status': 'status',
+    'JuridicalSituation': 'juridicalsituation', 'TypeOfEnterprise': 'typeofenterprise',
+    'JuridicalForm': 'juridicalform', 'JuridicalFormCAC': 'juridicalformcac',
+    'StartDate': 'startdate', 'EstablishmentNumber': 'establishmentnumber',
+    'Language': 'language', 'TypeOfDenomination': 'typeofdenomination',
+    'Denomination': 'denomination', 'EntityNumber': 'entitynumber',
+    'TypeOfAddress': 'typeofaddress', 'CountryNL': 'countrynl',
+    'CountryFR': 'countryfr', 'Zipcode': 'zipcode',
+    'MunicipalityNL': 'municipalitynl', 'MunicipalityFR': 'municipalityfr',
+    'StreetNL': 'streetnl', 'StreetFR': 'streetfr',
+    'HouseNumber': 'housenumber', 'Box': 'box',
+    'ExtraAddressInfo': 'extraaddressinfo', 'DateStrikingOff': 'datestrikingoff',
+    'EntityContact': 'entitycontact', 'ContactType': 'contacttype',
+    'Value': 'value', 'ActivityGroup': 'activitygroup',
+    'NaceVersion': 'naceversion', 'NaceCode': 'nacecode',
+    'Classification': 'classification', 'Category': 'category',
+    'Code': 'code', 'Description': 'description',
 }
 
 
@@ -68,30 +121,8 @@ def init_master():
     conn = get_conn(MASTER_DB)
     with conn.cursor() as cur:
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo_master")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.enterprise (
-            enterprisenumber VARCHAR(20) PRIMARY KEY, status VARCHAR(2),
-            juridicalsituation VARCHAR(10), typeofenterprise VARCHAR(3),
-            juridicalform VARCHAR(10), juridicalformcac VARCHAR(10), startdate VARCHAR(20))""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.establishment (
-            establishmentnumber VARCHAR(20) PRIMARY KEY, enterprisenumber VARCHAR(20),
-            startdate VARCHAR(20), entitynumber VARCHAR(20))""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.denomination (
-            entitynumber VARCHAR(20) PRIMARY KEY, denomination VARCHAR(500), type VARCHAR(10), language VARCHAR(3))""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.address (
-            entitynumber VARCHAR(20), typeofaddress VARCHAR(20), country VARCHAR(5),
-            zipcode VARCHAR(20), municipality VARCHAR(100), street VARCHAR(500),
-            housenumber VARCHAR(20), box VARCHAR(20), extraaddressinfo VARCHAR(500),
-            PRIMARY KEY (entitynumber, typeofaddress))""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.contact (
-            entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(20), value VARCHAR(500), area VARCHAR(20), language VARCHAR(3))""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.activity (
-            entitynumber VARCHAR(20), activitygroup VARCHAR(20), naceversion VARCHAR(10),
-            nacecode VARCHAR(20), classification VARCHAR(20),
-            PRIMARY KEY (entitynumber, activitygroup, naceversion, nacecode))""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.branch (
-            id SERIAL PRIMARY KEY, enterprisenumber VARCHAR(20), establishmentnumber VARCHAR(20), startdate VARCHAR(20))""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.code (
-            entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(50), code VARCHAR(50))""")
+        for sql in MASTER_SCHEMA:
+            cur.execute(sql)
     conn.commit()
     conn.close()
 
@@ -156,29 +187,35 @@ def create_version_db(label):
         cur.execute("CREATE SCHEMA IF NOT EXISTS kbo")
         for sql in [
             """CREATE TABLE kbo.enterprise (
-                EnterpriseNumber VARCHAR(20) PRIMARY KEY, Status VARCHAR(2),
+                EnterpriseNumber VARCHAR(100) PRIMARY KEY, Status VARCHAR(2),
                 JuridicalSituation VARCHAR(10), TypeOfEnterprise VARCHAR(3),
                 JuridicalForm VARCHAR(10), JuridicalFormCAC VARCHAR(10), StartDate VARCHAR(20))""",
             """CREATE TABLE kbo.establishment (
-                EstablishmentNumber VARCHAR(20) PRIMARY KEY, EnterpriseNumber VARCHAR(20),
-                StartDate VARCHAR(20), EntityNumber VARCHAR(20))""",
+                EstablishmentNumber VARCHAR(100) PRIMARY KEY, StartDate VARCHAR(20),
+                EnterpriseNumber VARCHAR(100))""",
             """CREATE TABLE kbo.denomination (
-                EntityNumber VARCHAR(20) PRIMARY KEY, Denomination VARCHAR(500), Type VARCHAR(10), Language VARCHAR(3))""",
+                EntityNumber VARCHAR(100), Language VARCHAR(3),
+                TypeOfDenomination VARCHAR(10), Denomination VARCHAR(500))""",
             """CREATE TABLE kbo.address (
-                EntityNumber VARCHAR(20), TypeOfAddress VARCHAR(20), Country VARCHAR(5),
-                ZipCode VARCHAR(20), Municipality VARCHAR(100), Street VARCHAR(500),
-                HouseNumber VARCHAR(20), Box VARCHAR(20), ExtraAddressInfo VARCHAR(500),
-                PRIMARY KEY (EntityNumber, TypeOfAddress))""",
+                EntityNumber VARCHAR(100), TypeOfAddress VARCHAR(20),
+                CountryNL VARCHAR(5), CountryFR VARCHAR(5), Zipcode VARCHAR(20),
+                MunicipalityNL VARCHAR(100), MunicipalityFR VARCHAR(100),
+                StreetNL VARCHAR(500), StreetFR VARCHAR(500),
+                HouseNumber VARCHAR(20), Box VARCHAR(20),
+                ExtraAddressInfo VARCHAR(500), DateStrikingOff VARCHAR(20))""",
             """CREATE TABLE kbo.contact (
-                EntityNumber VARCHAR(20) PRIMARY KEY, Type VARCHAR(20), Value VARCHAR(500), Area VARCHAR(20), Language VARCHAR(3))""",
+                EntityNumber VARCHAR(100), EntityContact VARCHAR(20),
+                ContactType VARCHAR(20), Value VARCHAR(500))""",
             """CREATE TABLE kbo.activity (
-                EntityNumber VARCHAR(20), ActivityGroup VARCHAR(20), NaceVersion VARCHAR(10),
-                NaceCode VARCHAR(20), Classification VARCHAR(20),
-                PRIMARY KEY (EntityNumber, ActivityGroup, NaceVersion, NaceCode))""",
+                EntityNumber VARCHAR(100), ActivityGroup VARCHAR(20),
+                NaceVersion VARCHAR(10), NaceCode VARCHAR(20),
+                Classification VARCHAR(20))""",
             """CREATE TABLE kbo.branch (
-                Id SERIAL PRIMARY KEY, EnterpriseNumber VARCHAR(20), EstablishmentNumber VARCHAR(20), StartDate VARCHAR(20))""",
+                Id SERIAL PRIMARY KEY, EnterpriseNumber VARCHAR(100),
+                EstablishmentNumber VARCHAR(100), StartDate VARCHAR(20))""",
             """CREATE TABLE kbo.code (
-                EntityNumber VARCHAR(20) PRIMARY KEY, Type VARCHAR(50), Code VARCHAR(50))"""
+                Category VARCHAR(50), Code VARCHAR(50),
+                Language VARCHAR(3), Description VARCHAR(500))""",
         ]:
             cur.execute(sql)
     conn.commit()
@@ -339,9 +376,12 @@ def merge_extract(label):
 
             # Build DELETE + INSERT
             if pkeys:
-                # Build WHERE clause for matching rows
-                pk_idx = [src_cols.index(pk) for pk in pkeys if pk in src_cols]
-                where_parts = [f"m.col{pk_idx[i]} = s.col{pk_idx[i]}" for i in range(len(pk_idx))]
+                # Map version column name (CamelCase) -> master column position
+                pk_master_cols = [COL_MAP.get(pk, pk).lower() for pk in pkeys if pk in src_cols or COL_MAP.get(pk) is not None]
+                # Find position of each PK column in src_cols for staging reference
+                pk_idx_in_staging = [src_cols.index(pk) if pk in src_cols else src_cols.index(next(k for k, v in COL_MAP.items() if v == pk.lower()))
+                    for pk in pkeys]
+                where_parts = [f"m.{pk_master_cols[i]} = s.col{pk_idx_in_staging[i]}" for i in range(len(pkeys))]
                 where_clause = ' AND '.join(where_parts)
                 
                 # Delete matching from master
