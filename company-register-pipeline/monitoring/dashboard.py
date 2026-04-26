@@ -191,6 +191,12 @@ def api_command(run_id):
     return jsonify({'success': True, 'command': command})
 
 
+@app.errorhandler(500)
+def internal_error(e):
+    import traceback
+    return f'<pre>{traceback.format_exc()}</pre>', 500
+
+
 if __name__ == '__main__':
     port = int(os.getenv('MONITOR_PORT', '8050'))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=True)
