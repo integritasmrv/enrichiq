@@ -339,6 +339,7 @@ def merge_extract(label):
     try:
         for csv_file, master_table, version_table in TABLES:
             table_name = master_table.split('.')[1]
+            schema_name = master_table.split('.')[0]
             if table_name in merged_tables:
                 logger.info(f"Skipping {master_table} (already merged)")
 
@@ -416,43 +417,45 @@ def merge_extract(label):
                         pk_master_cols.append(mpk)
                 pk_col_str = ', '.join(pk_master_cols)
 
-                swap_table = f'{master_table.split(".")[1]}_swap'
+                swap_table = f'{table_name}_swap'
+                swap_full = f'{schema_name}.{swap_table}' if schema_name else swap_table
                 
                 # Create swap table with proper master column names (aliased from staging)
                 col_aliases = ', '.join([f'col{i} as {master_col_names[i]}' for i in range(len(master_col_names))])
                 with master_conn.cursor() as cur:
-                    cur.execute(f"DROP TABLE IF EXISTS {swap_table}")
-                    cur.execute(f"CREATE UNLOGGED TABLE {swap_table} AS SELECT DISTINCT ON ({staging_col_list}) {col_aliases} FROM {staging_table}")
+                    cur.execute(f"DROP TABLE IF EXISTS {swap_full}")
+                    cur.execute(f"CREATE UNLOGGED TABLE {swap_full} AS SELECT DISTINCT ON ({staging_col_list}) {col_aliases} FROM {staging_table}")
                 master_conn.commit()
                 
                 with master_conn.cursor() as cur:
-                    cur.execute(f"SELECT COUNT(*) FROM {swap_table}")
+                    cur.execute(f"SELECT COUNT(*) FROM {swap_full}")
                     swap_count = cur.fetchone()[0]
                 
                 # Add master rows not in staging using ON CONFLICT (fast via PK)
                 if pk_master_cols:
                     with master_conn.cursor() as cur:
-                        cur.execute(f"ALTER TABLE {swap_table} ADD PRIMARY KEY ({pk_col_str})")
+                        cur.execute(f"ALTER TABLE {swap_full} ADD PRIMARY KEY ({pk_col_str})")
                     master_conn.commit()
                     
                     with master_conn.cursor() as cur:
-                        cur.execute(f"INSERT INTO {swap_table} SELECT * FROM {master_table} ON CONFLICT ({pk_col_str}) DO NOTHING")
+                        cur.execute(f"INSERT INTO {swap_full} SELECT * FROM {master_table} ON CONFLICT ({pk_col_str}) DO NOTHING")
                         avoid_dup_count = cur.rowcount
                     master_conn.commit()
                     deleted = master_before - avoid_dup_count if avoid_dup_count > 0 else 0
                 else:
                     deleted = 0
                     with master_conn.cursor() as cur:
-                        cur.execute(f"INSERT INTO {swap_table} SELECT * FROM {master_table}")
+                        cur.execute(f"INSERT INTO {swap_full} SELECT * FROM {master_table}")
                     master_conn.commit()
 
-                # Swap tables
+                # Swap tables in the correct schema
+                old_table = f'{schema_name}.{table_name}_old'
                 with master_conn.cursor() as cur:
-                    cur.execute(f"ALTER TABLE {swap_table} SET LOGGED")
-                    cur.execute(f"DROP TABLE IF EXISTS {master_table}_old")
-                    cur.execute(f"ALTER TABLE {master_table} RENAME TO {master_table.split('.')[1]}_old")
-                    cur.execute(f"ALTER TABLE {swap_table} RENAME TO {master_table.split('.')[1]}")
-                    cur.execute(f"DROP TABLE IF EXISTS {master_table.split('.')[1]}_old")
+                    cur.execute(f"ALTER TABLE {swap_full} SET LOGGED")
+                    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
+                    cur.execute(f"ALTER TABLE {master_table} RENAME TO {table_name}_old")
+                    cur.execute(f"ALTER TABLE {swap_full} RENAME TO {table_name}")
+                    cur.execute(f"DROP TABLE IF EXISTS {old_table}")
                 master_conn.commit()
                 
                 with master_conn.cursor() as cur:
