@@ -21,28 +21,44 @@ class DBConfig:
 class MonitoringDB:
     """Database connection and operations for pipeline monitoring."""
 
-    def __init__(self, config: Optional[DBConfig] = None):
+    def __init__(self, config: Optional[DBConfig] = None, metrics_config: Optional[DBConfig] = None):
         self.config = config or DBConfig()
+        self.metrics_config = metrics_config or DBConfig(
+            database=os.getenv('METRICS_DB_NAME', os.getenv('MONITOR_DB_NAME', 'BE KBO MASTER'))
+        )
         self._conn = None
+        self._metrics_conn = None
+
+    def _make_conn(self, cfg):
+        return psycopg2.connect(
+            host=cfg.host,
+            port=cfg.port,
+            database=cfg.database,
+            user=cfg.user,
+            password=cfg.password,
+            cursor_factory=RealDictCursor
+        )
 
     def connect(self):
-        """Establish database connection."""
+        """Establish database connection for runs/items."""
         if self._conn is None or self._conn.closed:
-            self._conn = psycopg2.connect(
-                host=self.config.host,
-                port=self.config.port,
-                database=self.config.database,
-                user=self.config.user,
-                password=self.config.password,
-                cursor_factory=RealDictCursor
-            )
+            self._conn = self._make_conn(self.config)
         return self._conn
 
+    def connect_metrics(self):
+        """Establish database connection for metrics."""
+        if self._metrics_conn is None or self._metrics_conn.closed:
+            self._metrics_conn = self._make_conn(self.metrics_config)
+        return self._metrics_conn
+
     def close(self):
-        """Close database connection."""
+        """Close all database connections."""
         if self._conn and not self._conn.closed:
             self._conn.close()
             self._conn = None
+        if self._metrics_conn and not self._metrics_conn.closed:
+            self._metrics_conn.close()
+            self._metrics_conn = None
 
     def __enter__(self):
         return self.connect()
@@ -252,7 +268,8 @@ class MonitoringDB:
 
     def get_all_runs_summary(self) -> List[Dict]:
         """Get summary of all runs for dashboard."""
-        with self.connect() as conn:
+        try:
+            conn = self.connect()
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
@@ -279,10 +296,13 @@ class MonitoringDB:
                     LIMIT 50
                 """)
                 return [dict(row) for row in cur.fetchall()]
+        except Exception:
+            return []
 
     def get_all_metrics_summary(self) -> List[Dict]:
         """Get summary of all pipeline metrics for dashboard."""
-        with self.connect() as conn:
+        try:
+            conn = self.connect_metrics()
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT
@@ -299,3 +319,5 @@ class MonitoringDB:
                     LIMIT 100
                 """)
                 return [dict(row) for row in cur.fetchall()]
+        except Exception:
+            return []
