@@ -319,10 +319,19 @@ def merge_extract(label):
         cur.execute("UPDATE public.pipeline_state SET status = 'merging', merge_started_at = NOW() WHERE extract_version = %s", (label,))
         metrics_conn.commit()
 
+    # Get list of already-merged tables to skip
+    with metrics_conn.cursor() as cur:
+        cur.execute("SELECT table_name FROM public.pipeline_metrics WHERE extract_version = %s AND operation = 'MERGED' AND status = 'completed'", (label,))
+        merged_tables = set(r[0] for r in cur.fetchall())
+
     total_ops = 0
     try:
         for csv_file, master_table, version_table in TABLES:
             table_name = master_table.split('.')[1]
+            if table_name in merged_tables:
+                logger.info(f"Skipping {master_table} (already merged)")
+
+                continue
             pkeys = PK_COLS.get(table_name, [])
             
             logger.info(f"Merging {master_table}...")
