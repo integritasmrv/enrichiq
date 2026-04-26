@@ -418,10 +418,11 @@ def merge_extract(label):
 
                 swap_table = f'{master_table.split(".")[1]}_swap'
                 
-                # Create swap table from staging with dedup
+                # Create swap table with proper master column names (aliased from staging)
+                col_aliases = ', '.join([f'col{i} as {master_col_names[i]}' for i in range(len(master_col_names))])
                 with master_conn.cursor() as cur:
                     cur.execute(f"DROP TABLE IF EXISTS {swap_table}")
-                    cur.execute(f"CREATE UNLOGGED TABLE {swap_table} AS SELECT DISTINCT ON ({staging_col_list}) {staging_col_list} FROM {staging_table}")
+                    cur.execute(f"CREATE UNLOGGED TABLE {swap_table} AS SELECT DISTINCT ON ({staging_col_list}) {col_aliases} FROM {staging_table}")
                 master_conn.commit()
                 
                 with master_conn.cursor() as cur:
