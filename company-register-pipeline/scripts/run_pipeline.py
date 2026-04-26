@@ -49,7 +49,7 @@ MASTER_SCHEMA = [
         typeofdenomination VARCHAR(10), denomination VARCHAR(500))""",
     """CREATE TABLE IF NOT EXISTS kbo_master.address (
         entitynumber VARCHAR(100), typeofaddress VARCHAR(20),
-        countrynl VARCHAR(5), countryfr VARCHAR(5), zipcode VARCHAR(20),
+        countrynl VARCHAR(100), countryfr VARCHAR(100), zipcode VARCHAR(20),
         municipalitynl VARCHAR(100), municipalityfr VARCHAR(100),
         streetnl VARCHAR(500), streetfr VARCHAR(500),
         housenumber VARCHAR(20), box VARCHAR(20),
