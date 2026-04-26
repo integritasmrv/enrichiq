@@ -9,6 +9,14 @@ from monitoring.db_utils import MonitoringDB, DBConfig
 
 app = Flask(__name__)
 
+@app.template_filter('fmt')
+def fmt_filter(value):
+    if value is None:
+        return '0'
+    if isinstance(value, float):
+        return f'{value:,.2f}'
+    return f'{int(value):,}'
+
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html>
@@ -108,9 +116,9 @@ HTML_TEMPLATE = '''
             <td>{{ metric.extract_version }}</td>
             <td>{{ metric.table_name }}</td>
             <td>{{ metric.operation }}</td>
-            <td>{{ metric.rows_count|default(0)|int|format(',') }}</td>
-            <td class="metric-inserted">{{ metric.rows_inserted|default(0)|int|format(',') }}</td>
-            <td class="metric-updated">{{ metric.rows_updated|default(0)|int|format(',') }}</td>
+            <td>{{ metric.rows_count|default(0)|int|fmt }}</td>
+            <td class="metric-inserted">{{ metric.rows_inserted|default(0)|int|fmt }}</td>
+            <td class="metric-updated">{{ metric.rows_updated|default(0)|int|fmt }}</td>
             <td class="metric-{{ metric.status }}">{{ metric.status }}</td>
             <td>{{ metric.recorded_at }}</td>
         </tr>
