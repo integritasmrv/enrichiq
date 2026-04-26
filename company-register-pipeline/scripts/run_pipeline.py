@@ -198,7 +198,7 @@ def create_version_db(label):
                 TypeOfDenomination VARCHAR(10), Denomination VARCHAR(500))""",
             """CREATE TABLE kbo.address (
                 EntityNumber VARCHAR(100), TypeOfAddress VARCHAR(20),
-                CountryNL VARCHAR(5), CountryFR VARCHAR(5), Zipcode VARCHAR(20),
+                CountryNL VARCHAR(100), CountryFR VARCHAR(100), Zipcode VARCHAR(20),
                 MunicipalityNL VARCHAR(100), MunicipalityFR VARCHAR(100),
                 StreetNL VARCHAR(500), StreetFR VARCHAR(500),
                 HouseNumber VARCHAR(20), Box VARCHAR(20),
