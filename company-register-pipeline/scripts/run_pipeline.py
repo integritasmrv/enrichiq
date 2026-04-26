@@ -420,11 +420,13 @@ def merge_extract(label):
                 swap_table = f'{table_name}_swap'
                 swap_full = f'{schema_name}.{swap_table}' if schema_name else swap_table
                 
-                # Create swap table with proper master column names (aliased from staging)
+                # Create swap table with proper master column names (aliased from staging), dedup on PK
+                # Use PK columns for DISTINCT ON to ensure uniqueness
+                pk_staging_list = ', '.join([f'col{src_cols.index(next(k for k, v in COL_MAP.items() if v == mpk))}' for mpk in pk_master_cols]) if pk_master_cols else staging_col_list
                 col_aliases = ', '.join([f'col{i} as {master_col_names[i]}' for i in range(len(master_col_names))])
                 with master_conn.cursor() as cur:
                     cur.execute(f"DROP TABLE IF EXISTS {swap_full}")
-                    cur.execute(f"CREATE UNLOGGED TABLE {swap_full} AS SELECT DISTINCT ON ({staging_col_list}) {col_aliases} FROM {staging_table}")
+                    cur.execute(f"CREATE UNLOGGED TABLE {swap_full} AS SELECT DISTINCT ON ({pk_staging_list}) {col_aliases} FROM {staging_table}")
                 master_conn.commit()
                 
                 with master_conn.cursor() as cur:
