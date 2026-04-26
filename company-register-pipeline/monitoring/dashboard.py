@@ -68,7 +68,7 @@ HTML_TEMPLATE = '''
         </tr>
         {% for run in runs %}
         <tr class="status-{{ run.status }}">
-            <td>{{ run.pipeline_name }}</td>
+            <td><a href="/run/{{ run.run_id }}">{{ run.pipeline_name }}</a></td>
             <td>{{ run.pipeline_version }}</td>
             <td>{{ run.source_type }}</td>
             <td>{{ run.run_type }}</td>
@@ -157,6 +157,65 @@ def index():
         last_update=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     )
 
+
+@app.route('/run/<run_id>')
+def run_detail(run_id):
+    db = MonitoringDB()
+    details = db.get_run_details(run_id)
+    db.close()
+    run = details.get('run', {})
+    items = details.get('items', [])
+    return render_template_string(RUN_DETAIL_TEMPLATE, run=run, items=items)
+
+RUN_DETAIL_TEMPLATE = '''
+<!DOCTYPE html>
+<html>
+<head><title>Run Detail</title>
+<style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+    h1 { color: #333; } h2 { color: #555; margin-top: 20px; }
+    table { border-collapse: collapse; width: 100%; background: white; margin-bottom: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background: #4CAF50; color: white; } tr:hover { background: #f5f5f5; }
+    a { text-decoration: none; color: #1565c0; }
+    .info { background: white; padding: 15px; border: 1px solid #ddd; margin-bottom: 20px; }
+    .info p { margin: 5px 0; }
+</style></head>
+<body>
+    <h1>{{ run.pipeline_name }}</h1>
+    <div class="info">
+        <p><b>Run ID:</b> {{ run.run_id }}</p>
+        <p><b>Status:</b> {{ run.status }}</p>
+        <p><b>Version:</b> {{ run.pipeline_version }}</p>
+        <p><b>Type:</b> {{ run.run_type }} / {{ run.source_type }}</p>
+        <p><b>Started:</b> {{ run.started_at|default('-') }}</p>
+        <p><b>Finished:</b> {{ run.finished_at|default('-') }}</p>
+        <p><b>Error:</b> {{ run.error_message|default('') }}</p>
+    </div>
+    <h2>Files / Items ({{ items|length }})</h2>
+    <table>
+        <tr>
+            <th>Type</th><th>Source Path</th><th>Table</th>
+            <th>Status</th><th>Progress</th><th>Items</th>
+            <th>Started</th><th>Finished</th>
+        </tr>
+        {% for item in items %}
+        <tr>
+            <td>{{ item.item_type }}</td>
+            <td>{{ item.source_path|default('') }}</td>
+            <td>{{ item.table_name|default('') }}</td>
+            <td>{{ item.status }}</td>
+            <td>{{ item.progress_percent|default(0) }}%</td>
+            <td>{{ item.processed_items|default(0) }} / {{ item.total_items|default(0) }}</td>
+            <td>{{ item.started_at|default('-') }}</td>
+            <td>{{ item.finished_at|default('-') }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <p><a href="/">&laquo; Back to Dashboard</a></p>
+</body>
+</html>
+'''
 
 @app.route('/api/runs')
 def api_runs():
