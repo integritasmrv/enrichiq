@@ -252,56 +252,30 @@ class MonitoringDB:
 
     def get_all_runs_summary(self) -> List[Dict]:
         """Get summary of all runs for dashboard."""
-        try:
-            conn = self.connect()
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT
-                        run_id,
-                        pipeline_name,
-                        pipeline_version,
-                        source_type,
-                        run_type,
-                        status,
-                        progress_percent,
-                        total_items,
-                        processed_items,
-                        total_files,
-                        processed_files,
-                        server_load_percent,
-                        batch_size,
-                        started_at,
-                        finished_at,
-                        created_at,
-                        updated_at,
-                        EXTRACT(EPOCH FROM (updated_at - started_at))/60 as duration_minutes
-                    FROM pipeline_runs
-                    ORDER BY created_at DESC
-                    LIMIT 50
-                """)
-                return [dict(row) for row in cur.fetchall()]
-        except Exception:
-            return []
+        conn = self.connect()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    run_id, pipeline_name, pipeline_version, source_type, run_type,
+                    status, progress_percent, total_items, processed_items,
+                    total_files, processed_files, server_load_percent, batch_size,
+                    started_at, finished_at, created_at, updated_at,
+                    EXTRACT(EPOCH FROM (updated_at - started_at))/60 as duration_minutes
+                FROM pipeline_runs
+                ORDER BY created_at DESC
+                LIMIT 50
+            """)
+            return [dict(row) for row in cur.fetchall()]
 
     def get_all_metrics_summary(self) -> List[Dict]:
         """Get summary of all pipeline metrics for dashboard."""
-        try:
-            conn = self.connect()
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT
-                        extract_version,
-                        table_name,
-                        operation,
-                        rows_count,
-                        rows_inserted,
-                        rows_updated,
-                        status,
-                        recorded_at
-                    FROM public.pipeline_metrics
-                    ORDER BY recorded_at DESC
-                    LIMIT 100
-                """)
-                return [dict(row) for row in cur.fetchall()]
-        except Exception:
-            return []
+        conn = self.connect()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT extract_version, table_name, operation,
+                    rows_count, rows_inserted, rows_updated, status, recorded_at
+                FROM pipeline_metrics
+                ORDER BY recorded_at DESC
+                LIMIT 100
+            """)
+            return [dict(row) for row in cur.fetchall()]
