@@ -394,6 +394,15 @@ def merge_extract(label):
                 staging_count = cur.fetchone()[0]
             logger.info(f"  Staged: {staging_count:,}")
 
+            # Create index on staging for fast DELETE lookup
+            if pkeys:
+                idx_cols = ','.join([f'col{i}' for i in range(len(src_cols))])
+                idx_name = f'idx_{staging_table}_merge'
+                with master_conn.cursor() as cur:
+                    cur.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {staging_table} ({idx_cols})")
+                master_conn.commit()
+                logger.info(f"  Index created on staging")
+
             # Build DELETE + INSERT
             if pkeys:
                 # Map version column name (CamelCase) -> master column position
