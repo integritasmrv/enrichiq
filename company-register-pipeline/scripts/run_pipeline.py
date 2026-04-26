@@ -22,15 +22,20 @@ MASTER_DB = 'BE KBO MASTER'
 METRICS_DB = 'RUNS-METRICS'
 
 TABLES = [
-    ("Enterprise.csv", "kbo_master.enterprise", "kbo.enterprise"),
-    ("Establishment.csv", "kbo_master.establishment", "kbo.establishment"),
-    ("Denomination.csv", "kbo_master.denomination", "kbo.denomination"),
-    ("Address.csv", "kbo_master.address", "kbo.address"),
-    ("Contact.csv", "kbo_master.contact", "kbo.contact"),
-    ("Activity.csv", "kbo_master.activity", "kbo.activity"),
-    ("Branch.csv", "kbo_master.branch", "kbo.branch"),
-    ("Code.csv", "kbo_master.code", "kbo.code"),
+    ("Enterprise.csv",  "kbo_master.enterprise",     "kbo.enterprise"),
+    ("Establishment.csv","kbo_master.establishment",  "kbo.establishment"),
+    ("Denomination.csv", "kbo_master.denomination",   "kbo.denomination"),
+    ("Address.csv",      "kbo_master.address",        "kbo.address"),
+    ("Contact.csv",      "kbo_master.contact",        "kbo.contact"),
+    ("Activity.csv",     "kbo_master.activity",       "kbo.activity"),
+    ("Branch.csv",       "kbo_master.branch",         "kbo.branch"),
+    ("Code.csv",         "kbo_master.code",           "kbo.code"),
 ]
+
+VERSION_COLS = {
+    'kbo.branch': 'EnterpriseNumber,EstablishmentNumber,StartDate',
+    'kbo.code': 'EntityNumber,Type,Code',
+}
 
 PK_COLS = {
     'enterprise': ['enterprisenumber'],
@@ -39,7 +44,7 @@ PK_COLS = {
     'address': ['entitynumber', 'typeofaddress'],
     'contact': ['entitynumber'],
     'activity': ['entitynumber', 'activitygroup', 'naceversion', 'nacecode'],
-    'branch': ['id'],
+    'branch': ['establishmentnumber'],
     'code': ['entitynumber'],
 }
 
@@ -181,10 +186,11 @@ def create_version_db(label):
     return dbname
 
 
-def load_csv(conn, csv_path, table):
+def load_csv(conn, csv_path, table, cols=None):
+    col_clause = f"({cols})" if cols else ""
     with open(csv_path, 'r', encoding='latin-1', errors='replace') as f:
         with conn.cursor() as cur:
-            cur.copy_expert(f"COPY {table} FROM STDIN WITH (FORMAT CSV, HEADER, DELIMITER E'\\t', NULL '')", f)
+            cur.copy_expert(f"COPY {table} {col_clause} FROM STDIN WITH (FORMAT CSV, HEADER, DELIMITER ',', QUOTE '\"', NULL '')", f)
     conn.commit()
 
 
@@ -222,7 +228,8 @@ def load_extract(extract_path, label):
             try:
                 logger.info(f"Loading {csv_file}...")
                 conn = get_conn(dbname)
-                load_csv(conn, csv_path, version_table)
+                cols = VERSION_COLS.get(version_table)
+                load_csv(conn, csv_path, version_table, cols)
                 with conn.cursor() as cur:
                     cur.execute(f"SELECT COUNT(*) FROM {version_table}")
                     cnt = cur.fetchone()[0]
@@ -305,10 +312,7 @@ def merge_extract(label):
             # Export to CSV
             temp_file = f'/tmp/{table_name}_merge.csv'
             with version_conn.cursor() as cur:
-                cur.execute(f"COPY (SELECT {', '.join(src_cols)} FROM {version_table}) TO STDOUT WITH (FORMAT CSV, HEADER, DELIMITER ',')")
-                with open(temp_file, 'w', encoding='utf-8') as f:
-                    for row in cur:
-                        f.write(','.join(str(v) if v is not None else '' for v in row) + '\n')
+                cur.copy_expert(f"COPY (SELECT {', '.join(src_cols)} FROM {version_table}) TO STDOUT WITH (FORMAT CSV, HEADER, DELIMITER ',')", open(temp_file, 'w', encoding='utf-8'))
 
             logger.info(f"  Exported to {temp_file}")
 
