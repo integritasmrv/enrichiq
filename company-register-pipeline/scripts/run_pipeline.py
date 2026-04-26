@@ -19,6 +19,7 @@ DB_PORT = int(os.getenv('DB_PORT', '5434'))
 DB_USER = os.getenv('DB_USER', 'aiuser')
 DB_PASSWORD = os.getenv('DB_PASSWORD', 'aipassword123')
 MASTER_DB = 'BE KBO MASTER'
+METRICS_DB = 'RUNS-METRICS'
 
 TABLES = [
     ("Enterprise.csv", "kbo_master.enterprise", "kbo.enterprise"),
@@ -87,22 +88,6 @@ def init_master():
             id SERIAL PRIMARY KEY, enterprisenumber VARCHAR(20), establishmentnumber VARCHAR(20), startdate VARCHAR(20))""")
         cur.execute("""CREATE TABLE IF NOT EXISTS kbo_master.code (
             entitynumber VARCHAR(20) PRIMARY KEY, type VARCHAR(50), code VARCHAR(50))""")
-
-        # State and metrics tables
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.pipeline_state (
-            id SERIAL PRIMARY KEY, extract_version VARCHAR(50) UNIQUE NOT NULL,
-            status VARCHAR(20) DEFAULT 'pending', load_started_at TIMESTAMP,
-            load_completed_at TIMESTAMP, merge_started_at TIMESTAMP,
-            merge_completed_at TIMESTAMP, records_loaded BIGINT, records_merged BIGINT,
-            error_message TEXT, created_at TIMESTAMP DEFAULT NOW())""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS public.pipeline_metrics (
-            id SERIAL PRIMARY KEY, extract_version VARCHAR(50) NOT NULL,
-            table_name VARCHAR(50) NOT NULL, operation VARCHAR(20) NOT NULL,
-            rows_count BIGINT NOT NULL, rows_inserted BIGINT DEFAULT 0,
-            rows_updated BIGINT DEFAULT 0, status VARCHAR(20) DEFAULT 'completed',
-            recorded_at TIMESTAMP DEFAULT NOW())""")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_state_version ON public.pipeline_state(extract_version)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_metrics_version ON public.pipeline_metrics(extract_version, table_name)")
     conn.commit()
     conn.close()
     logger.info("Master database initialized.")
@@ -168,7 +153,7 @@ def load_csv(conn, csv_path, table):
 
 def load_extract(extract_path, label):
     dbname = get_version_db(label)
-    state_conn = get_conn(MASTER_DB)
+    state_conn = get_conn(METRICS_DB)
 
     with state_conn.cursor() as cur:
         cur.execute("SELECT status FROM public.pipeline_state WHERE extract_version = %s", (label,))
@@ -240,17 +225,18 @@ def merge_extract(label):
     dbname = get_version_db(label)
     master_conn = get_conn(MASTER_DB)
     version_conn = get_conn(dbname)
+    metrics_conn = get_conn(METRICS_DB)
 
-    with master_conn.cursor() as cur:
+    with metrics_conn.cursor() as cur:
         cur.execute("SELECT status FROM public.pipeline_state WHERE extract_version = %s", (label,))
         row = cur.fetchone()
         if row and row[0] == 'merged':
             logger.info(f"Version {label} already merged, skipping")
             return False
 
-    with master_conn.cursor() as cur:
+    with metrics_conn.cursor() as cur:
         cur.execute("UPDATE public.pipeline_state SET status = 'merging', merge_started_at = NOW() WHERE extract_version = %s", (label,))
-        master_conn.commit()
+        metrics_conn.commit()
 
     total_ops = 0
     try:
@@ -350,25 +336,26 @@ def merge_extract(label):
             # Record metrics with rows_inserted vs rows_updated
             rows_inserted = inserted - deleted if inserted > deleted else 0
             rows_updated = deleted
-            with master_conn.cursor() as cur:
+            with metrics_conn.cursor() as cur:
                 cur.execute("""INSERT INTO public.pipeline_metrics 
                     (extract_version, table_name, operation, rows_count, rows_inserted, rows_updated, status) 
                     VALUES (%s, %s, 'MERGED', %s, %s, %s, 'completed')""", 
                     (label, table_name, source_count, rows_inserted, rows_updated))
-            master_conn.commit()
+            metrics_conn.commit()
 
             logger.info(f"  {master_table}: {source_count:,} merged ({deleted:,} replaced, {inserted:,} new net)")
             total_ops += source_count
 
-        with master_conn.cursor() as cur:
+        with metrics_conn.cursor() as cur:
             cur.execute("""UPDATE public.pipeline_state 
                 SET status = 'merged', merge_completed_at = NOW(), records_merged = %s 
                 WHERE extract_version = %s""", (total_ops, label))
-            master_conn.commit()
+            metrics_conn.commit()
 
         logger.info(f"Merge complete: {total_ops:,} total")
         master_conn.close()
         version_conn.close()
+        metrics_conn.close()
         return True
 
     except Exception as e:
@@ -377,21 +364,22 @@ def merge_extract(label):
         traceback.print_exc()
         with master_conn.cursor() as cur:
             cur.execute("ROLLBACK")
-        with master_conn.cursor() as cur:
+        with metrics_conn.cursor() as cur:
             cur.execute("UPDATE public.pipeline_state SET status = 'failed', error_message = %s WHERE extract_version = %s", (str(e)[:500], label))
-            master_conn.commit()
+            metrics_conn.commit()
         master_conn.close()
         version_conn.close()
+        metrics_conn.close()
         raise
 
 
 def show_status():
-    conn = get_conn(MASTER_DB)
+    metrics_conn = get_conn(METRICS_DB)
     print("\n" + "="*70)
     print("PIPELINE STATUS")
     print("="*70)
 
-    with conn.cursor() as cur:
+    with metrics_conn.cursor() as cur:
         cur.execute("""SELECT extract_version, status, records_loaded, records_merged, error_message 
             FROM public.pipeline_state ORDER BY extract_version""")
         for row in cur.fetchall():
@@ -404,18 +392,20 @@ def show_status():
     print("\n" + "-"*70)
     print("METRICS")
     print("-"*70)
-    with conn.cursor() as cur:
+    with metrics_conn.cursor() as cur:
         cur.execute("""SELECT extract_version, table_name, operation, SUM(rows_count) 
             FROM public.pipeline_metrics 
             GROUP BY extract_version, table_name, operation 
             ORDER BY extract_version, table_name""")
         for row in cur.fetchall():
             print(f"  {row[0]}/{row[1]}/{row[2]}: {row[3]:,}")
+    metrics_conn.close()
 
+    master_conn = get_conn(MASTER_DB)
     print("\n" + "-"*70)
     print("MASTER TABLE COUNTS")
     print("-"*70)
-    with conn.cursor() as cur:
+    with master_conn.cursor() as cur:
         cur.execute("""SELECT 'enterprise' as tbl, COUNT(*) FROM kbo_master.enterprise
             UNION ALL SELECT 'establishment', COUNT(*) FROM kbo_master.establishment
             UNION ALL SELECT 'address', COUNT(*) FROM kbo_master.address
@@ -424,7 +414,7 @@ def show_status():
             ORDER BY tbl""")
         for row in cur.fetchall():
             print(f"  {row[0]}: {row[1]:,}")
-    conn.close()
+    master_conn.close()
     print()
 
 
